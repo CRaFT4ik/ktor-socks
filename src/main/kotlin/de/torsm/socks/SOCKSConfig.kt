@@ -1,7 +1,7 @@
 package de.torsm.socks
 
+import io.ktor.network.sockets.*
 import io.ktor.util.network.*
-import java.net.InetSocketAddress
 
 /**
  * [SOCKSServer] configuration

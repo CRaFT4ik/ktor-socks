@@ -13,7 +13,7 @@ class SOCKS5Tests {
     fun `SOCKS4 Not allowed`() {
         createClientSocket(4).use { clientSocket ->
             assertFailsWith<SocketException> {
-                clientSocket.connect(mockServer)
+                clientSocket.connect(mockServerJava)
             }
         }
     }
@@ -21,7 +21,7 @@ class SOCKS5Tests {
     @Test
     fun `IPv4 Ping Pong`() {
         createClientSocket(5).use { clientSocket ->
-            clientSocket.connect(mockServer)
+            clientSocket.connect(mockServerJava)
             clientSocket.ping()
             clientSocket.assertPong()
         }
@@ -31,7 +31,7 @@ class SOCKS5Tests {
     fun `IPv6 Ping Pong`() {
         val mockServer = InetSocketAddress("::1", mockServer.port)
         createClientSocket(5).use { clientSocket ->
-            clientSocket.connect(mockServer)
+            clientSocket.connect(mockServerJava)
             clientSocket.ping()
             clientSocket.assertPong()
         }
@@ -49,7 +49,7 @@ class SOCKS5Tests {
 
     @Test
     fun `Unreachable Host`() {
-        val unreachableHost = mockServer.withPort(8081)
+        val unreachableHost = mockServer.withPort(8081).toJavaInetAddress()
         createClientSocket(5).use { clientSocket ->
             assertFailsWith<SocketException> {
                 clientSocket.connect(unreachableHost)

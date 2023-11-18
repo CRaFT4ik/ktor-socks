@@ -5,7 +5,6 @@ import io.ktor.util.cio.*
 import io.ktor.utils.io.*
 import java.net.Inet4Address
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
 
@@ -64,4 +63,6 @@ internal inline fun <C : ReadWriteSocket, R> C.useWithChannels(autoFlush: Boolea
     }
 }
 
-internal fun InetSocketAddress.withPort(port: Int) = InetSocketAddress(address, port)
+internal fun InetSocketAddress.withPort(port: Int) = InetSocketAddress(hostname, port)
+
+internal fun InetSocketAddress.toJavaInetAddress() = toJavaAddress() as java.net.InetSocketAddress

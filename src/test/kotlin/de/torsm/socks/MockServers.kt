@@ -10,7 +10,6 @@ import java.lang.Short.toUnsignedInt
 import java.lang.reflect.Method
 import java.net.Authenticator
 import java.net.Inet4Address
-import java.net.InetSocketAddress
 import java.net.PasswordAuthentication
 
 annotation class AllowSOCKS4
@@ -86,7 +85,7 @@ class MockServers : InvocationInterceptor, BeforeAllCallback, AfterAllCallback {
                         val port = toUnsignedInt(reader.readShort())
                         val ip = ByteArray(4)
                         reader.readFully(ip)
-                        val address = InetSocketAddress(Inet4Address.getByAddress(ip), port)
+                        val address = InetSocketAddress(Inet4Address.getByAddress(ip).hostName, port)
                         socketBuilder.connect(address).useWithChannels { _, r, w ->
                             if (r.readUTF8Line() == "ping") {
                                 w.writeStringUtf8("pong\n")

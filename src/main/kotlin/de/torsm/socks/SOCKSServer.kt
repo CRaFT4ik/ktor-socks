@@ -1,11 +1,9 @@
 package de.torsm.socks
 
-import io.ktor.network.selector.ActorSelectorManager
+import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
-import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.ByteWriteChannel
-import io.ktor.utils.io.core.use
-import io.ktor.utils.io.joinTo
+import io.ktor.utils.io.*
+import io.ktor.utils.io.core.*
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import kotlin.coroutines.CoroutineContext

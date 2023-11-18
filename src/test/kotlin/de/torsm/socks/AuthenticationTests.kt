@@ -14,7 +14,7 @@ class AuthenticationTests {
     @ClientCredentials("username", "correct password")
     fun `SOCKS5 Authenticated Ping Pong`() {
         createClientSocket(5).use { clientSocket ->
-            clientSocket.connect(mockServer)
+            clientSocket.connect(mockServerJava)
             clientSocket.ping()
             clientSocket.assertPong()
         }
@@ -25,7 +25,7 @@ class AuthenticationTests {
     fun `SOCKS5 Authentication failed`() {
         createClientSocket(5).use { clientSocket ->
             assertFailsWith<SocketException> {
-                clientSocket.connect(mockServer)
+                clientSocket.connect(mockServerJava)
             }
         }
     }

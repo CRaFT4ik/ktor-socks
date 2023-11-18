@@ -16,7 +16,6 @@ import java.lang.Short.toUnsignedInt
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
-import java.net.InetSocketAddress
 
 @Suppress("BlockingMethodInNonBlockingContext")
 internal class SOCKSHandshake(
@@ -102,7 +101,7 @@ internal class SOCKSHandshake(
     }
 
     private suspend fun connect(request: SOCKSRequest) {
-        val host = InetSocketAddress(request.destinationAddress, request.port)
+        val host = InetSocketAddress(request.destinationAddress.hostName, request.port)
         hostSocket = try {
             withTimeout(TIME_LIMIT) {
                 aSocket(selector).tcp().connect(host)
@@ -141,10 +140,10 @@ internal class SOCKSHandshake(
 
         val hostAddress = hostSocket.remoteAddress as InetSocketAddress
 
-        if (hostAddress.address != request.destinationAddress) {
+        if (hostAddress.toJavaAddress() != request.destinationAddress) {
             sendFullReply(selectedVersion.connectionRefusedCode)
             hostSocket.close()
-            throw SOCKSException("Incoming host address (${hostAddress.address}) did not match requested host (${request.destinationAddress})")
+            throw SOCKSException("Incoming host address ($hostAddress) did not match requested host (${request.destinationAddress})")
         }
 
         try {
@@ -207,7 +206,7 @@ internal class SOCKSHandshake(
 
     private fun BytePacketBuilder.writeAddress(address: InetSocketAddress) {
         val port = address.port.toShort()
-        val ip = address.address
+        val ip = address.toJavaInetAddress().address
         when (selectedVersion) {
             SOCKS4 -> {
                 check(ip is Inet4Address || ip.isAnyLocalAddress) { "Expecting IPv4 address for SOCKS4" }
@@ -238,4 +237,4 @@ private const val SOCKS4_REJECTED = 91.toByte()
 private const val SOCKS5_RESERVED = 0.toByte()
 private const val SOCKS5_UNSUPPORTED_COMMAND = 7.toByte()
 private const val SOCKS5_NO_ACCEPTABLE_METHODS = 0xFF.toByte()
-private val emptyAddress = InetSocketAddress(InetAddress.getByAddress(byteArrayOf(0, 0, 0, 0)), 0)
+private val emptyAddress = InetSocketAddress("0.0.0.0", 0)

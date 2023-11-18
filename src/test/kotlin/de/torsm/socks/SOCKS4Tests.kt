@@ -16,7 +16,7 @@ class SOCKS4Tests {
     @Test
     fun `Ping Pong`() {
         createClientSocket(4).use { clientSocket ->
-            clientSocket.connect(mockServer)
+            clientSocket.connect(mockServerJava)
             clientSocket.ping()
             clientSocket.assertPong()
         }
@@ -26,7 +26,7 @@ class SOCKS4Tests {
     fun `4a Ping Pong`() {
         // Java socket api does not support SOCKS4a
         Socket().use { clientSocket ->
-            clientSocket.connect(proxyServer)
+            clientSocket.connect(proxyServerJava)
             val output = clientSocket.getOutputStream().asOutput()
             val input = clientSocket.getInputStream()
             output.run {
@@ -52,11 +52,11 @@ class SOCKS4Tests {
     fun `Bind Ping Pong`() {
         // Java socket api does not support bind requests, even though they're implemented
         createClientSocket(4).use { primarySocket ->
-            primarySocket.connect(mockServer)
+            primarySocket.connect(mockServerJava)
             val primaryOutput = primarySocket.getOutputStream().asOutput()
 
             Socket().use { clientSocket ->
-                clientSocket.connect(proxyServer)
+                clientSocket.connect(proxyServerJava)
                 val proxyOutput = clientSocket.getOutputStream().asOutput()
                 val proxyInput = clientSocket.getInputStream()
 
