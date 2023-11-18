@@ -11,6 +11,7 @@ import io.ktor.utils.io.core.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeout
+import org.slf4j.LoggerFactory
 import java.lang.Byte.toUnsignedInt
 import java.lang.Short.toUnsignedInt
 import java.net.Inet4Address
@@ -26,6 +27,8 @@ internal class SOCKSHandshake(
 ) {
     lateinit var selectedVersion: SOCKSVersion
     lateinit var hostSocket: Socket
+
+    private val log = LoggerFactory.getLogger(javaClass)
 
     suspend fun negotiate() {
         selectedVersion = reader.readVersion()
@@ -112,6 +115,7 @@ internal class SOCKSHandshake(
         }
 
         try {
+            log.debug("Connected to {}:{}", request.destinationAddress.hostName, request.port)
             sendFullReply(selectedVersion.successCode, hostSocket.localAddress as InetSocketAddress)
         } catch (e: Throwable) {
             hostSocket.close()
@@ -147,6 +151,7 @@ internal class SOCKSHandshake(
         }
 
         try {
+            log.debug("Host was bound: {}:{}", hostAddress.hostname, hostAddress.port)
             sendFullReply(selectedVersion.successCode, hostAddress)
         } catch (e: Exception) {
             hostSocket.close()

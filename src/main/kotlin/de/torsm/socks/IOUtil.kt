@@ -47,7 +47,10 @@ internal suspend fun ByteReadChannel.readNullTerminatedString(): String {
 }
 
 
-internal inline fun <C : ReadWriteSocket, R> C.useWithChannels(autoFlush: Boolean = false, block: (C, ByteReadChannel, ByteWriteChannel) -> R): R {
+internal inline fun <C : ReadWriteSocket, R> C.useWithChannels(
+    autoFlush: Boolean = false,
+    block: (C, ByteReadChannel, ByteWriteChannel) -> R
+): R {
     val reader = openReadChannel()
     val writer = openWriteChannel(autoFlush)
     var cause: Throwable? = null
