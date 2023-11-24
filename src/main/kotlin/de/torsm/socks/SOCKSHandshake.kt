@@ -19,18 +19,18 @@ import java.net.Inet6Address
 import java.net.InetAddress
 
 @Suppress("BlockingMethodInNonBlockingContext")
-internal class SOCKSHandshake(
+public class SOCKSHandshake(
     private val reader: ByteReadChannel,
     private val writer: ByteWriteChannel,
     private val config: SOCKSConfig,
     private val selector: SelectorManager
 ) {
-    lateinit var selectedVersion: SOCKSVersion
-    lateinit var hostSocket: Socket
+    public lateinit var selectedVersion: SOCKSVersion
+    public lateinit var hostSocket: Socket
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    suspend fun negotiate() {
+    public suspend fun negotiate() {
         selectedVersion = reader.readVersion()
         when (selectedVersion) {
             SOCKS4 -> {

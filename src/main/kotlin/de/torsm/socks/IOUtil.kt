@@ -47,7 +47,7 @@ internal suspend fun ByteReadChannel.readNullTerminatedString(): String {
 }
 
 
-internal inline fun <C : ReadWriteSocket, R> C.useWithChannels(
+public inline fun <C : ReadWriteSocket, R> C.useWithChannels(
     autoFlush: Boolean = false,
     block: (C, ByteReadChannel, ByteWriteChannel) -> R
 ): R {
