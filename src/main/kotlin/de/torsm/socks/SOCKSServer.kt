@@ -18,7 +18,7 @@ import kotlin.coroutines.CoroutineContext
  *
  * To create a [SOCKSServer], refer to the top level [socksServer] functions.
  */
-public open class SOCKSServer protected constructor(
+public open class SOCKSServer(
     private val config: SOCKSConfig,
     context: CoroutineContext
 ): CoroutineScope {
