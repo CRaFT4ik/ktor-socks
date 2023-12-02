@@ -25,8 +25,8 @@ public open class SOCKSServer(
     private val log = LoggerFactory.getLogger(javaClass)
     private val selector = ActorSelectorManager(Dispatchers.IO)
 
-    override val coroutineContext: CoroutineContext
-            = context + SupervisorJob(context[Job]) + CoroutineName("socks-server")
+    override val coroutineContext: CoroutineContext =
+        context + SupervisorJob(context.job) + CoroutineName("socks-server")
 
     /**
      * Launches a coroutine that listens on the network address defined in [config] to accept clients, initiate
@@ -44,10 +44,10 @@ public open class SOCKSServer(
                 while (true) {
                     val clientSocket = serverSocket.accept()
                     val clientName = clientSocket.remoteAddress.toString()
-                    log.trace("Client connected: {}", clientName)
+                    log.debug("Client connected: {}", clientName)
 
                     launchClientJob(clientSocket).invokeOnCompletion {
-                        log.trace("Client disconnected: {}", clientName)
+                        log.debug("Client disconnected: {}", clientName)
                     }
                 }
             }
@@ -65,22 +65,27 @@ public open class SOCKSServer(
         handshake.negotiate()
         handshake.hostSocket.useWithChannels { _, hostReader, hostWriter ->
             coroutineScope {
-                relayApplicationData(reader, hostWriter)
-                relayApplicationData(hostReader, writer)
+                val proxy1 = relayApplicationData(reader, hostWriter)
+                val proxy2 = relayApplicationData(hostReader, writer)
+                cancelOnCompletion("Closed: no data to read", proxy1, proxy2)
             }
         }
     }
 
-    protected fun CoroutineScope.relayApplicationData(src: ByteReadChannel, dst: ByteWriteChannel) {
-        launch {
+    private fun CoroutineScope.relayApplicationData(src: ByteReadChannel, dst: ByteWriteChannel): Job {
+        return launch {
             try {
                 src.joinTo(dst, false)
-            } catch (ignored: Throwable) {
-                /*
-                * Exceptions while relaying channel traffic (due to closed sockets for example)
-                * are not exceptional and are considered the natural end of client/host communication
-                */
+            } catch (ignored: Exception) {
+                /* Exceptions while relaying channel traffic (due to closed sockets for example)
+                 * are not exceptional and are considered the natural end of client/host communication */
             }
+        }
+    }
+
+    private fun CoroutineScope.cancelOnCompletion(message: String, vararg tasks: Job) {
+        tasks.forEach {
+            it.invokeOnCompletion { t -> this@cancelOnCompletion.cancel(message, t) }
         }
     }
 }
