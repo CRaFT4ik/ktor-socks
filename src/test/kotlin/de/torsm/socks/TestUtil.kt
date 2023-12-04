@@ -8,10 +8,10 @@ import java.net.Socket
 import kotlin.test.assertEquals
 
 
-val proxyServer = InetSocketAddress(InetAddress.getLocalHost().hostName, 1080)
+val proxyServer = InetSocketAddress(InetAddress.getLocalHost().hostAddress, 1080)
 val proxyServerJava = proxyServer.toJavaInetAddress()
 
-val mockServer = InetSocketAddress(InetAddress.getLocalHost().hostName, 8080)
+val mockServer = InetSocketAddress(InetAddress.getLocalHost().hostAddress, 8080)
 val mockServerJava = mockServer.toJavaInetAddress()
 
 fun createClientSocket(socksVersion: Int): Socket {

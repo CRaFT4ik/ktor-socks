@@ -85,7 +85,7 @@ class MockServers : InvocationInterceptor, BeforeAllCallback, AfterAllCallback {
                         val port = toUnsignedInt(reader.readShort())
                         val ip = ByteArray(4)
                         reader.readFully(ip)
-                        val address = InetSocketAddress(Inet4Address.getByAddress(ip).hostName, port)
+                        val address = InetSocketAddress(Inet4Address.getByAddress(ip).hostAddress, port)
                         socketBuilder.connect(address).useWithChannels { _, r, w ->
                             if (r.readUTF8Line() == "ping") {
                                 w.writeStringUtf8("pong\n")

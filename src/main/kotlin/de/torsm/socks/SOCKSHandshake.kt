@@ -104,7 +104,7 @@ public class SOCKSHandshake(
     }
 
     private suspend fun connect(request: SOCKSRequest) {
-        val host = InetSocketAddress(request.destinationAddress.hostName, request.port)
+        val host = InetSocketAddress(request.destinationAddress.hostAddress, request.port)
         hostSocket = try {
             withTimeout(TIME_LIMIT) {
                 aSocket(selector).tcp().connect(host)
@@ -115,7 +115,7 @@ public class SOCKSHandshake(
         }
 
         try {
-            log.debug("Connected to {}:{}", request.destinationAddress.hostName, request.port)
+            log.debug("Connected to {}", host)
             sendFullReply(selectedVersion.successCode, hostSocket.localAddress as InetSocketAddress)
         } catch (e: Throwable) {
             hostSocket.close()
@@ -151,7 +151,7 @@ public class SOCKSHandshake(
         }
 
         try {
-            log.debug("Host was bound: {}:{}", hostAddress.hostname, hostAddress.port)
+            log.debug("Host was bound: {}", hostAddress)
             sendFullReply(selectedVersion.successCode, hostAddress)
         } catch (e: Exception) {
             hostSocket.close()
