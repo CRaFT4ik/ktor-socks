@@ -115,7 +115,7 @@ public class SOCKSHandshake(
         }
 
         try {
-            log.debug("Connected to {}", host)
+            if (log.isDebugEnabled) log.debug("Connected to {}", request.destinationAddress.toSocketString(host.port))
             sendFullReply(selectedVersion.successCode, hostSocket.localAddress as InetSocketAddress)
         } catch (e: Throwable) {
             hostSocket.close()
@@ -226,6 +226,19 @@ public class SOCKSHandshake(
                 }
                 writeFully(ip.address)
                 writeShort(port)
+            }
+        }
+    }
+
+    private fun InetAddress.toSocketString(port: Int): String {
+        val str = toString()
+        val i = str.indexOf('/')
+        val hostname = if (i != 0) str.substring(0, i) else null
+        val ip = str.substring(i + 1, str.length)
+        return buildString {
+            append(hostname ?: ip).append(':').append(port)
+            if (hostname != null) {
+                append(" (").append(ip).append(':').append(port).append(")")
             }
         }
     }
