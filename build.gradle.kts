@@ -7,6 +7,7 @@ plugins {
 
 kotlin {
     explicitApi()
+    jvmToolchain(17)
 }
 
 repositories {
@@ -22,14 +23,6 @@ dependencies {
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.9.2")
 }
 
-tasks {
-    compileKotlin {
-        kotlinOptions.jvmTarget = "17"
-    }
-    compileTestKotlin {
-        kotlinOptions.jvmTarget = "17"
-    }
-    test {
-        useJUnitPlatform()
-    }
+tasks.test {
+    useJUnitPlatform()
 }
