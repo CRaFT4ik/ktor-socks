@@ -51,6 +51,8 @@ public open class SOCKSServer(
                     }
                 }
             }
+        }.invokeOnCompletion {
+            selector.close()
         }
     }
 

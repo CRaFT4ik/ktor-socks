@@ -71,9 +71,11 @@ class MockServers : InvocationInterceptor, BeforeAllCallback, AfterAllCallback {
     }.start()
 
     private suspend fun launchPingPongServer(mutex: Mutex) {
-        val socketBuilder = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp()
+        val selector = ActorSelectorManager(Dispatchers.IO)
+        val socketBuilder = aSocket(selector).tcp()
+        val serverSocket = socketBuilder.bind(port = mockServer.port)
 
-        socketBuilder.bind(port = mockServer.port).use { serverSocket ->
+        try {
             mutex.unlock()
             while (true) {
                 val client = serverSocket.accept()
@@ -94,6 +96,9 @@ class MockServers : InvocationInterceptor, BeforeAllCallback, AfterAllCallback {
                     }
                 }
             }
+        } finally {
+            selector.close()
+            serverSocket.close()
         }
     }
 }
