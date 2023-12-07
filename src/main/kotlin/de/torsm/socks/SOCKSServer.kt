@@ -44,10 +44,10 @@ public open class SOCKSServer(
                 while (true) {
                     val clientSocket = serverSocket.accept()
                     val clientName = clientSocket.remoteAddress.toString()
-                    log.debug("Client connected: {}", clientName)
+                    log.debug("SOCKS client connected: {}", clientName)
 
                     launchClientJob(clientSocket).invokeOnCompletion {
-                        log.debug("Client disconnected: {}", clientName)
+                        log.debug("SOCKS client disconnected: {}", clientName)
                     }
                 }
             }
