@@ -19,18 +19,23 @@ import java.net.Inet6Address
 import java.net.InetAddress
 
 @Suppress("BlockingMethodInNonBlockingContext")
-public class SOCKSHandshake(
+public open class SOCKSHandshake(
     private val reader: ByteReadChannel,
     private val writer: ByteWriteChannel,
     private val config: SOCKSConfig,
     private val selector: SelectorManager
 ) {
-    public lateinit var selectedVersion: SOCKSVersion
-    public lateinit var hostSocket: Socket
+    public lateinit var selectedVersion: SOCKSVersion; protected set
+    public lateinit var hostSocket: Socket; private set
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    public suspend fun negotiate() {
+    public open suspend fun negotiate() {
+        negotiateAuthorize()
+        negotiateHandleRequest()
+    }
+
+    protected suspend fun negotiateAuthorize() {
         selectedVersion = reader.readVersion()
         when (selectedVersion) {
             SOCKS4 -> {
@@ -45,7 +50,9 @@ public class SOCKSHandshake(
                 check(reader.readVersion() == selectedVersion) { "Inconsistent SOCKS versions" }
             }
         }
+    }
 
+    protected suspend fun negotiateHandleRequest() {
         val request = receiveRequest()
 
         when (request.command) {
@@ -58,7 +65,6 @@ public class SOCKSHandshake(
             }
         }
     }
-
 
     private suspend fun receiveRequest(): SOCKSRequest {
         val command: SOCKSCommand

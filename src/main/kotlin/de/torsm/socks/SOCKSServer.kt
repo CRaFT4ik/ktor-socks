@@ -19,14 +19,17 @@ import kotlin.coroutines.CoroutineContext
  * To create a [SOCKSServer], refer to the top level [socksServer] functions.
  */
 public open class SOCKSServer(
-    private val config: SOCKSConfig,
+    protected val config: SOCKSConfig,
     context: CoroutineContext
 ): CoroutineScope {
     private val log = LoggerFactory.getLogger(javaClass)
-    private val selector = ActorSelectorManager(Dispatchers.IO)
+
+    private val exceptionHandler = CoroutineExceptionHandler { _, t -> log.trace(t.message, t) }
 
     override val coroutineContext: CoroutineContext =
-        context + SupervisorJob(context.job) + CoroutineName("socks-server")
+        context + SupervisorJob(context.job) + CoroutineName("socks-server") + exceptionHandler
+
+    protected val selector: SelectorManager = ActorSelectorManager(Dispatchers.IO)
 
     /**
      * Launches a coroutine that listens on the network address defined in [config] to accept clients, initiate
@@ -47,7 +50,7 @@ public open class SOCKSServer(
                     log.debug("SOCKS client connected: {}", clientName)
 
                     launchClientJob(clientSocket).invokeOnCompletion {
-                        log.debug("SOCKS client disconnected: {}", clientName)
+                        log.debug("SOCKS client disconnected: {} (reason: {})", clientName, it?.message ?: "normally")
                     }
                 }
             }
