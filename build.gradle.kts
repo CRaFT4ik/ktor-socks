@@ -16,7 +16,7 @@ repositories {
 
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
-    implementation("io.ktor:ktor-network:2.3.7")
+    implementation("io.ktor:ktor-network:2.3.12")
     implementation("ch.qos.logback:logback-classic:1.4.14")
     testImplementation(kotlin("test-junit5"))
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.10.1")
