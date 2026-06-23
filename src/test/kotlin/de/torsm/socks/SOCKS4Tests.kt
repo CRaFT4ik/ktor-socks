@@ -30,13 +30,13 @@ class SOCKS4Tests {
             val output = clientSocket.getOutputStream().asOutput()
             val input = clientSocket.getInputStream()
             output.run {
-                writeByte(4)                    // protocol
-                writeByte(1)                    // connect
-                writeShort(8080)                // port
-                writeInt(1)                     // ip - 0.0.0.1
-                writeByte(0)                    // userid
-                writeText("localhost")          // hostname
-                writeByte(0)                    //
+                writeByte(4)                        // protocol
+                writeByte(1)                        // connect
+                writeShort(mockServer.port.toShort()) // port (dynamic)
+                writeInt(1)                         // ip - 0.0.0.1 (SOCKS4a marker)
+                writeByte(0)                        // userid
+                writeText("localhost")              // hostname
+                writeByte(0)                        //
                 flush()
             }
             assertEquals(0, input.read())       // protocol
@@ -63,7 +63,7 @@ class SOCKS4Tests {
                 proxyOutput.run {
                     writeByte(4)                                    // protocol
                     writeByte(2)                                    // bind
-                    writeShort(8080)                                // port
+                    writeShort(mockServer.port.toShort())           // port (dynamic)
                     writeFully(Inet4Address.getLocalHost().address) // expected ip
                     writeByte(0)                                    // userid
                     flush()

@@ -25,4 +25,5 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    jvmArgs("-Xmx768m")
 }

@@ -11,6 +11,7 @@ import java.lang.reflect.Method
 import java.net.Authenticator
 import java.net.Inet4Address
 import java.net.PasswordAuthentication
+import java.util.concurrent.atomic.AtomicReference
 
 annotation class AllowSOCKS4
 annotation class ClientCredentials(val username: String, val password: String)
@@ -18,6 +19,20 @@ annotation class ServerCredentials(val username: String, val password: String)
 
 class MockServers : InvocationInterceptor, BeforeAllCallback, AfterAllCallback {
     lateinit var job: Job
+
+    companion object {
+        /**
+         * Populated in [beforeAll] after the proxy and ping-pong servers bind to ephemeral ports.
+         * Tests read these via the properties in TestUtil.kt.
+         */
+        val proxyAddressRef = AtomicReference<InetSocketAddress>()
+        val mockAddressRef = AtomicReference<InetSocketAddress>()
+
+        val proxyAddress: InetSocketAddress
+            get() = proxyAddressRef.get() ?: error("MockServers not initialised")
+        val mockAddress: InetSocketAddress
+            get() = mockAddressRef.get() ?: error("MockServers not initialised")
+    }
 
     override fun beforeAll(context: ExtensionContext) {
         val mutex = Mutex(locked = true)
@@ -27,15 +42,11 @@ class MockServers : InvocationInterceptor, BeforeAllCallback, AfterAllCallback {
                 launchPingPongServer(mutex)
             }
         }
-        runBlocking {
-            mutex.lock()
-        }
+        runBlocking { mutex.lock() }
     }
 
     override fun afterAll(context: ExtensionContext) {
-        runBlocking {
-            job.cancelAndJoin()
-        }
+        runBlocking { job.cancelAndJoin() }
     }
 
     override fun interceptTestMethod(
@@ -57,23 +68,36 @@ class MockServers : InvocationInterceptor, BeforeAllCallback, AfterAllCallback {
         }
     }
 
+    private fun CoroutineScope.launchProxyServer(context: ExtensionContext) {
+        val localHost = java.net.InetAddress.getLocalHost().hostAddress
+        val server = socksServer {
+            // Port 0 lets the OS pick a free ephemeral port.
+            networkAddress = InetSocketAddress(localHost, 0)
+            allowSOCKS4 = context.requiredTestClass.isAnnotationPresent(AllowSOCKS4::class.java)
 
-    private fun CoroutineScope.launchProxyServer(context: ExtensionContext) = socksServer {
-        networkAddress = proxyServer
-        allowSOCKS4 = context.requiredTestClass.isAnnotationPresent(AllowSOCKS4::class.java)
-
-        context.requiredTestClass.getAnnotation(ServerCredentials::class.java)?.let { credentials ->
-            addAuthenticationMethod(object : UsernamePasswordAuthentication() {
-                override fun verify(username: String, password: String) =
-                    username == credentials.username && password == credentials.password
-            })
+            context.requiredTestClass.getAnnotation(ServerCredentials::class.java)?.let { credentials ->
+                addAuthenticationMethod(object : UsernamePasswordAuthentication() {
+                    override fun verify(username: String, password: String) =
+                        username == credentials.username && password == credentials.password
+                })
+            }
         }
-    }.start()
+        server.start()
+        // SOCKSServer.boundAddress is set synchronously inside start() before returning.
+        proxyAddressRef.set(server.boundAddress)
+    }
 
     private suspend fun launchPingPongServer(mutex: Mutex) {
         val selector = ActorSelectorManager(Dispatchers.IO)
         val socketBuilder = aSocket(selector).tcp()
-        val serverSocket = socketBuilder.bind(port = mockServer.port)
+        val localHost = java.net.InetAddress.getLocalHost().hostAddress
+        // Bind on all interfaces so the proxy can reach us via 127.0.0.1 OR the LAN IP.
+        // Port 0 lets the OS pick a free ephemeral port.
+        val serverSocket = socketBuilder.bind(InetSocketAddress("0.0.0.0", 0))
+        val boundPort = (serverSocket.localAddress as InetSocketAddress).port
+        // Advertise the LAN IP so the SOCKS proxy can reach us by hostname ("localhost" resolves
+        // to 127.0.0.1 on the proxy side, which is also covered by 0.0.0.0 binding).
+        mockAddressRef.set(InetSocketAddress(localHost, boundPort))
 
         try {
             mutex.unlock()

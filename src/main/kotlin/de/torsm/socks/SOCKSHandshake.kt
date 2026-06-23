@@ -14,9 +14,11 @@ import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.lang.Byte.toUnsignedInt
 import java.lang.Short.toUnsignedInt
+import java.net.ConnectException
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.NoRouteToHostException
 
 @Suppress("BlockingMethodInNonBlockingContext")
 public open class SOCKSHandshake(
@@ -60,7 +62,7 @@ public open class SOCKSHandshake(
             BIND -> bind(request)
             UDP_ASSOCIATE -> {
                 check(selectedVersion == SOCKS5) { "SOCKS4 does not support $UDP_ASSOCIATE" }
-                sendFullReply(SOCKS5_UNSUPPORTED_COMMAND)
+                sendFullReply(SOCKS5_COMMAND_NOT_SUPPORTED)
                 throw SOCKSException("Unsupported command: $UDP_ASSOCIATE")
             }
         }
@@ -101,6 +103,7 @@ public open class SOCKSHandshake(
         val commonMethod = config.authenticationMethods.firstOrNull { it.code in clientMethods }
 
         if (commonMethod == null) {
+            // RFC 1928 §3: reply X'FF' means no acceptable method; client MUST close.
             sendPartialReply(SOCKS5_NO_ACCEPTABLE_METHODS)
             throw SOCKSException("No common authentication method found")
         } else {
@@ -115,7 +118,16 @@ public open class SOCKSHandshake(
             withTimeout(TIME_LIMIT) {
                 aSocket(selector).tcp().connect(host)
             }
+        } catch (e: ConnectException) {
+            // RFC 1928 §6: X'05' = Connection refused (SOCKS5 only; SOCKS4 uses generic failure)
+            sendFullReply(selectedVersion.connectionRefusedCode)
+            throw SOCKSException("Connection refused by host: $host", e)
+        } catch (e: NoRouteToHostException) {
+            // RFC 1928 §6: X'03' = Network unreachable (SOCKS5 only; SOCKS4 uses generic failure)
+            sendFullReply(selectedVersion.networkUnreachableCode)
+            throw SOCKSException("No route to host: $host", e)
         } catch (e: Throwable) {
+            // RFC 1928 §6: X'04' = Host unreachable (general fallback)
             sendFullReply(selectedVersion.unreachableHostCode)
             throw SOCKSException("Unreachable host: $host", e)
         }
@@ -149,8 +161,10 @@ public open class SOCKSHandshake(
         }
 
         val hostAddress = hostSocket.remoteAddress as InetSocketAddress
+        // Extract the java.net.InetAddress from the Ktor InetSocketAddress for comparison
+        val connectingInetAddress = (hostAddress.toJavaAddress() as java.net.InetSocketAddress).address
 
-        if (hostAddress.toJavaAddress() != request.destinationAddress) {
+        if (connectingInetAddress != request.destinationAddress) {
             sendFullReply(selectedVersion.connectionRefusedCode)
             hostSocket.close()
             throw SOCKSException("Incoming host address ($hostAddress) did not match requested host (${request.destinationAddress})")
@@ -190,13 +204,28 @@ public open class SOCKSHandshake(
 
     private suspend fun ByteReadChannel.readCommand(): SOCKSCommand {
         val code = readByte()
-        return SOCKSCommand.byCode(code)
+        return try {
+            SOCKSCommand.byCode(code)
+        } catch (e: SOCKSException) {
+            // RFC 1928 §6: X'07' = Command not supported (SOCKS5 only)
+            if (selectedVersion == SOCKS5) sendFullReply(SOCKS5_COMMAND_NOT_SUPPORTED)
+            throw e
+        }
     }
 
     private suspend fun ByteReadChannel.readAddress(): InetAddress {
         val addressType = when (selectedVersion) {
             SOCKS4 -> IPV4
-            SOCKS5 -> SOCKSAddressType.byCode(readByte())
+            SOCKS5 -> {
+                val code = readByte()
+                try {
+                    SOCKSAddressType.byCode(code)
+                } catch (e: SOCKSException) {
+                    // RFC 1928 §6: X'08' = Address type not supported
+                    sendFullReply(SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED)
+                    throw e
+                }
+            }
         }
         return when (addressType) {
             IPV4 -> {
@@ -259,6 +288,12 @@ public open class SOCKSHandshake(
 private const val TIME_LIMIT = 120000.toLong()
 private const val SOCKS4_REJECTED = 91.toByte()
 private const val SOCKS5_RESERVED = 0.toByte()
-private const val SOCKS5_UNSUPPORTED_COMMAND = 7.toByte()
+
+// RFC 1928 §6 reply codes (SOCKS5)
+private const val SOCKS5_COMMAND_NOT_SUPPORTED = 7.toByte()
+private const val SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED = 8.toByte()
+
+// RFC 1928 §3 – method negotiation
 private const val SOCKS5_NO_ACCEPTABLE_METHODS = 0xFF.toByte()
+
 private val emptyAddress = InetSocketAddress("0.0.0.0", 0)

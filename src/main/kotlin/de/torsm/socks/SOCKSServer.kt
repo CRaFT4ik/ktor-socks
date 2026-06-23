@@ -32,6 +32,13 @@ public open class SOCKSServer(
     protected val selector: SelectorManager = ActorSelectorManager(Dispatchers.IO)
 
     /**
+     * The address this server is actually bound to after [start] has been called.
+     * Useful when the server was configured with port 0 (ephemeral port assignment).
+     */
+    public var boundAddress: InetSocketAddress = config.networkAddress
+        private set
+
+    /**
      * Launches a coroutine that listens on the network address defined in [config] to accept clients, initiate
      * handshakes, and relay traffic between the client and the host server.
      *
@@ -40,7 +47,8 @@ public open class SOCKSServer(
      */
     public fun start() {
         val serverSocket = aSocket(selector).tcp().bind(config.networkAddress)
-        log.info("Starting SOCKS proxy server on {}", serverSocket.localAddress)
+        boundAddress = serverSocket.localAddress as InetSocketAddress
+        log.info("Starting SOCKS proxy server on {}", boundAddress)
 
         launch {
             serverSocket.use {

@@ -8,11 +8,13 @@ import java.net.Socket
 import kotlin.test.assertEquals
 
 
-val proxyServer = InetSocketAddress(InetAddress.getLocalHost().hostAddress, 1080)
-val proxyServerJava = proxyServer.toJavaInetAddress()
+/** Actual proxy server address, assigned by [MockServers] after binding on an ephemeral port. */
+val proxyServer: InetSocketAddress get() = MockServers.proxyAddress
+val proxyServerJava: java.net.InetSocketAddress get() = proxyServer.toJavaInetAddress()
 
-val mockServer = InetSocketAddress(InetAddress.getLocalHost().hostAddress, 8080)
-val mockServerJava = mockServer.toJavaInetAddress()
+/** Actual echo/ping-pong server address, assigned by [MockServers] after binding. */
+val mockServer: InetSocketAddress get() = MockServers.mockAddress
+val mockServerJava: java.net.InetSocketAddress get() = mockServer.toJavaInetAddress()
 
 fun createClientSocket(socksVersion: Int): Socket {
     System.setProperty("socksProxyVersion", socksVersion.toString())
