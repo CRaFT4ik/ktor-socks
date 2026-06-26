@@ -8,10 +8,8 @@ import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
 import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.lang.Byte.toUnsignedInt
@@ -21,6 +19,7 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.NoRouteToHostException
+import java.net.UnknownHostException
 
 @Suppress("BlockingMethodInNonBlockingContext")
 public open class SOCKSHandshake(
@@ -105,7 +104,7 @@ public open class SOCKSHandshake(
         val commonMethod = config.authenticationMethods.firstOrNull { it.code in clientMethods }
 
         if (commonMethod == null) {
-            // RFC 1928 §3: reply X'FF' means no acceptable method; client MUST close.
+            // RFC 1928 section 3: reply X'FF' means no acceptable method; client MUST close.
             sendPartialReply(SOCKS5_NO_ACCEPTABLE_METHODS)
             throw SOCKSException("No common authentication method found")
         } else {
@@ -115,21 +114,24 @@ public open class SOCKSHandshake(
     }
 
     private suspend fun connect(request: SOCKSRequest) {
+        // Pass the IP literal of the already-resolved InetAddress; no further DNS round trip is
+        // implied. The HOSTNAME branch resolved the name asynchronously via [AsyncDnsResolver],
+        // so request.destinationAddress is the chosen IP at this point.
         val host = InetSocketAddress(request.destinationAddress.hostAddress, request.port)
         hostSocket = try {
             withTimeout(config.connectTimeoutMillis) {
                 aSocket(selector).tcp().connect(host)
             }
         } catch (e: ConnectException) {
-            // RFC 1928 §6: X'05' = Connection refused (SOCKS5 only; SOCKS4 uses generic failure)
+            // RFC 1928 section 6: X'05' = Connection refused (SOCKS5 only; SOCKS4 uses generic failure)
             sendFullReply(selectedVersion.connectionRefusedCode)
             throw SOCKSException("Connection refused by host: $host", e)
         } catch (e: NoRouteToHostException) {
-            // RFC 1928 §6: X'03' = Network unreachable (SOCKS5 only; SOCKS4 uses generic failure)
+            // RFC 1928 section 6: X'03' = Network unreachable (SOCKS5 only; SOCKS4 uses generic failure)
             sendFullReply(selectedVersion.networkUnreachableCode)
             throw SOCKSException("No route to host: $host", e)
         } catch (e: Throwable) {
-            // RFC 1928 §6: X'04' = Host unreachable (general fallback)
+            // RFC 1928 section 6: X'04' = Host unreachable (general fallback)
             sendFullReply(selectedVersion.unreachableHostCode)
             throw SOCKSException("Unreachable host: $host", e)
         }
@@ -209,7 +211,7 @@ public open class SOCKSHandshake(
         return try {
             SOCKSCommand.byCode(code)
         } catch (e: SOCKSException) {
-            // RFC 1928 §6: X'07' = Command not supported (SOCKS5 only)
+            // RFC 1928 section 6: X'07' = Command not supported (SOCKS5 only)
             if (selectedVersion == SOCKS5) sendFullReply(SOCKS5_COMMAND_NOT_SUPPORTED)
             throw e
         }
@@ -223,7 +225,7 @@ public open class SOCKSHandshake(
                 try {
                     SOCKSAddressType.byCode(code)
                 } catch (e: SOCKSException) {
-                    // RFC 1928 §6: X'08' = Address type not supported
+                    // RFC 1928 section 6: X'08' = Address type not supported
                     sendFullReply(SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED)
                     throw e
                 }
@@ -246,13 +248,16 @@ public open class SOCKSHandshake(
         }
     }
 
-    // InetAddress.getByName is a synchronous blocking JDK call (the JVM has no async resolver).
-    // If the caller's coroutine dispatcher is the compute pool (Dispatchers.Default), a slow
-    // resolver pins one compute worker per in-flight handshake. Hopping to Dispatchers.IO keeps
-    // blocking lookups off the compute pool. Without an actual async resolver this is the
-    // cheapest correct hardening.
-    private suspend fun resolveHostnameOffDefault(host: String): InetAddress =
-        withContext(Dispatchers.IO) { InetAddress.getByName(host) }
+    // Non-blocking DNS resolve: dnsjava NIO races 1.1.1.1 vs 8.8.8.8 with a system fallback.
+    // The caller thread is never pinned on a slow getaddrinfo; the longest a hung resolver can
+    // hold the path is bounded by AsyncDnsResolver.DEFAULT_TIMEOUT_MILLIS. NXDOMAIN or total
+    // resolver failure surfaces as UnknownHostException, which the upstream code paths already
+    // treat as an unreachable host.
+    private suspend fun resolveHostnameOffDefault(host: String): InetAddress = try {
+        AsyncDnsResolver.shared.resolve(host)
+    } catch (e: UnknownHostException) {
+        throw e
+    }
 
     private fun BytePacketBuilder.writeAddress(address: InetSocketAddress) {
         val port = address.port.toShort()
@@ -298,11 +303,11 @@ public open class SOCKSHandshake(
 private const val SOCKS4_REJECTED = 91.toByte()
 private const val SOCKS5_RESERVED = 0.toByte()
 
-// RFC 1928 §6 reply codes (SOCKS5)
+// RFC 1928 section 6 reply codes (SOCKS5)
 private const val SOCKS5_COMMAND_NOT_SUPPORTED = 7.toByte()
 private const val SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED = 8.toByte()
 
-// RFC 1928 §3 – method negotiation
+// RFC 1928 section 3, method negotiation
 private const val SOCKS5_NO_ACCEPTABLE_METHODS = 0xFF.toByte()
 
 private val emptyAddress = InetSocketAddress("0.0.0.0", 0)

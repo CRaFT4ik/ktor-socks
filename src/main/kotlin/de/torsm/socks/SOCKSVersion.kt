@@ -17,7 +17,7 @@ public enum class SOCKSVersion(
         unreachableHostCode = 91,
         connectionRefusedCode = 91
     ),
-    // SOCKS5 distinguishes network/host/refused per RFC 1928 §6
+    // SOCKS5 distinguishes network/host/refused per RFC 1928 section 6
     SOCKS5(
         code = 5,
         replyVersion = 5,
