@@ -9,12 +9,22 @@ import io.ktor.util.network.*
  * @property allowSOCKS4 Whether the server should accept clients using SOCKS4, which doesn't support authentication
  * @property authenticationMethods List of supported [authentication methods][SOCKSAuthenticationMethod] for SOCKS5
  * @property networkAddress [NetworkAddress] the server should bind to
+ * @property connectTimeoutMillis Upper bound on the outbound TCP `connect()` to the requested
+ *   target (and on the `accept()` wait for a SOCKS BIND). The default of 120 s was the upstream
+ *   hard-coded value; lower it for callers that proxy many concurrent flows to unreachable hosts
+ *   so a single bad target cannot hold dial-state for two minutes.
  */
 public class SOCKSConfig(
     public val allowSOCKS4: Boolean,
     public val authenticationMethods: List<SOCKSAuthenticationMethod>,
-    public val networkAddress: InetSocketAddress
-)
+    public val networkAddress: InetSocketAddress,
+    public val connectTimeoutMillis: Long = DEFAULT_CONNECT_TIMEOUT_MILLIS,
+) {
+    public companion object {
+        /** Backwards-compatible default: matches the previous hard-coded `TIME_LIMIT`. */
+        public const val DEFAULT_CONNECT_TIMEOUT_MILLIS: Long = 120_000L
+    }
+}
 
 /**
  * Builder class for [SOCKSConfig]
@@ -37,10 +47,14 @@ public class SOCKSConfigBuilder {
 
     public var port: Int = 1080
 
+    /** See [SOCKSConfig.connectTimeoutMillis]. */
+    public var connectTimeoutMillis: Long = SOCKSConfig.DEFAULT_CONNECT_TIMEOUT_MILLIS
+
     public fun build(): SOCKSConfig = SOCKSConfig(
         allowSOCKS4,
         authenticationMethods.ifEmpty { mutableListOf(NoAuthentication) },
-        networkAddress ?: InetSocketAddress(hostname, port)
+        networkAddress ?: InetSocketAddress(hostname, port),
+        connectTimeoutMillis,
     )
 }
 

@@ -8,8 +8,10 @@ import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
 import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import java.lang.Byte.toUnsignedInt
@@ -81,7 +83,7 @@ public open class SOCKSHandshake(
                 reader.readNullTerminatedString() // ignoring USERID field
 
                 address = if (ip.isSOCKS4a) {
-                    InetAddress.getByName(reader.readNullTerminatedString())
+                    resolveHostnameOffDefault(reader.readNullTerminatedString())
                 } else {
                     ip
                 }
@@ -115,7 +117,7 @@ public open class SOCKSHandshake(
     private suspend fun connect(request: SOCKSRequest) {
         val host = InetSocketAddress(request.destinationAddress.hostAddress, request.port)
         hostSocket = try {
-            withTimeout(TIME_LIMIT) {
+            withTimeout(config.connectTimeoutMillis) {
                 aSocket(selector).tcp().connect(host)
             }
         } catch (e: ConnectException) {
@@ -147,7 +149,7 @@ public open class SOCKSHandshake(
             aSocket(selector).tcp().bind(address).use { serverSocket ->
                 val socketJob = async {
                     try {
-                        withTimeout(TIME_LIMIT) {
+                        withTimeout(config.connectTimeoutMillis) {
                             serverSocket.accept()
                         }
                     } catch (e: Throwable) {
@@ -239,10 +241,18 @@ public open class SOCKSHandshake(
             HOSTNAME -> {
                 val size = toUnsignedInt(readByte())
                 val data = readPacket(size)
-                InetAddress.getByName(data.readBytes().decodeToString())
+                resolveHostnameOffDefault(data.readBytes().decodeToString())
             }
         }
     }
+
+    // InetAddress.getByName is a synchronous blocking JDK call (the JVM has no async resolver).
+    // If the caller's coroutine dispatcher is the compute pool (Dispatchers.Default), a slow
+    // resolver pins one compute worker per in-flight handshake. Hopping to Dispatchers.IO keeps
+    // blocking lookups off the compute pool. Without an actual async resolver this is the
+    // cheapest correct hardening.
+    private suspend fun resolveHostnameOffDefault(host: String): InetAddress =
+        withContext(Dispatchers.IO) { InetAddress.getByName(host) }
 
     private fun BytePacketBuilder.writeAddress(address: InetSocketAddress) {
         val port = address.port.toShort()
@@ -285,7 +295,6 @@ public open class SOCKSHandshake(
     )
 }
 
-private const val TIME_LIMIT = 120000.toLong()
 private const val SOCKS4_REJECTED = 91.toByte()
 private const val SOCKS5_RESERVED = 0.toByte()
 
