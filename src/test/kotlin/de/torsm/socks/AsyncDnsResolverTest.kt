@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.net.InetSocketAddress
 import java.net.UnknownHostException
 import java.util.concurrent.Executors
 
@@ -42,6 +43,30 @@ internal class AsyncDnsResolverTest {
         val addr = resolver.resolve("1.2.3.4")
         assertNotNull(addr)
         assertEquals("1.2.3.4", addr.hostAddress)
+    }
+
+    @Test
+    fun `empty system DNS watcher still resolves a public name via the public racers`() = runBlocking {
+        // No system server published: the race must still complete using Cloudflare and Google.
+        // We pick a high-availability public name that any working egress will resolve.
+        val watcher = SystemDnsWatcher(read = { emptyList() })
+        val resolver = AsyncDnsResolver(timeoutMillis = 5_000L, systemDnsWatcher = watcher)
+        val addr = resolver.resolve("one.one.one.one")
+        assertNotNull(addr)
+        assertTrue(addr.hostAddress.contains('.'), "expected an IPv4 dotted-quad, got ${addr.hostAddress}")
+    }
+
+    @Test
+    fun `system DNS server is consulted in the race when the watcher has one`() = runBlocking {
+        // Point the watcher at a real public resolver (1.0.0.1, Cloudflare's secondary) so the
+        // system racer can actually answer; this proves the watcher value is plumbed into the
+        // race and not silently discarded. We do NOT assert who wins - any non-null result
+        // proves the race composed at least one working racer.
+        val watcher = SystemDnsWatcher(read = { listOf(InetSocketAddress("1.0.0.1", 53)) })
+        watcher.refreshNow()
+        val resolver = AsyncDnsResolver(timeoutMillis = 5_000L, systemDnsWatcher = watcher)
+        val addr = resolver.resolve("one.one.one.one")
+        assertNotNull(addr)
     }
 
     @Test

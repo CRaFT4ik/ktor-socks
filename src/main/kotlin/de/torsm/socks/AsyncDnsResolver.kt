@@ -20,20 +20,39 @@ import org.xbill.DNS.Lookup
 import org.xbill.DNS.Message
 import org.xbill.DNS.Name
 import org.xbill.DNS.Resolver
+import org.xbill.DNS.ResolverConfig
 import org.xbill.DNS.SimpleResolver
 import org.xbill.DNS.Type
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.UnknownHostException
+import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Non-blocking DNS resolver for hostnames received by the SOCKS5 handshake.
  *
- * Two upstream resolvers (Cloudflare 1.1.1.1, Google 8.8.8.8) are queried in parallel;
- * whichever answers first wins. If neither answers within [timeoutMillis], the JDK system
- * resolver is consulted (off [Dispatchers.IO]) as a last-chance fallback so split-horizon
- * intranet names still resolve.
+ * Three upstream resolvers are queried in parallel and whichever answers first wins:
+ * Cloudflare 1.1.1.1, Google 8.8.8.8, and the host's currently-configured system DNS server
+ * (read from the OS network stack via dnsjava's [ResolverConfig], refreshed every
+ * [SYSTEM_DNS_REFRESH_INTERVAL_MILLIS]). The system entry is what lets split-horizon intranet
+ * names (corporate hosts that the public resolvers do not know) succeed without forcing every
+ * query through a slow corporate DNS. When the watcher has no system server yet (e.g. fresh
+ * process, between refreshes after the OS removed all servers), the race runs with the two
+ * public resolvers only.
+ *
+ * Critically, the system DNS is queried over UDP via dnsjava NIO exactly like the public
+ * resolvers; we never call [InetAddress.getByName] just to pick up the OS resolver, since that
+ * call blocks a JVM thread on getaddrinfo for the full system timeout. The watcher only reads
+ * the OS-configured server IPs (cheap, non-blocking) and feeds them into the same async race.
+ *
+ * If no path answers within [timeoutMillis], the JDK system resolver is consulted off
+ * [Dispatchers.IO] as a last-chance fallback so even names that need OS-level resolution hooks
+ * (mDNS, NSS plug-ins) still resolve. The fallback is bounded by [timeoutMillis] so a hung
+ * getaddrinfo cannot pin the path indefinitely.
  *
  * Threading contract: [resolve] suspends but never blocks the caller's thread on socket I/O.
  * dnsjava's NIO event loop runs on its own daemon threads.
@@ -45,25 +64,29 @@ import java.util.concurrent.atomic.AtomicReference
  * @property timeoutMillis per-attempt timeout for each upstream resolver (race) and for the
  *   system fallback combined; total wall-clock is bounded by 2x [timeoutMillis] in the worst
  *   case (race timeout + system fallback timeout).
+ * @property systemDnsWatcher source of system DNS server addresses; tests inject a fixed or
+ *   empty watcher to control the race composition. Defaults to a shared watcher that polls
+ *   the OS every [SYSTEM_DNS_REFRESH_INTERVAL_MILLIS].
  */
 public class AsyncDnsResolver(
     private val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    private val systemDnsWatcher: SystemDnsWatcher = SystemDnsWatcher.shared,
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
-    private data class Resolvers(val cloudflare: SimpleResolver, val google: SimpleResolver)
+    private data class PublicResolvers(val cloudflare: SimpleResolver, val google: SimpleResolver)
 
-    private val resolvers: AtomicReference<Resolvers?> = AtomicReference(null)
+    private val publicResolvers: AtomicReference<PublicResolvers?> = AtomicReference(null)
 
-    private fun resolvers(): Resolvers? {
-        resolvers.get()?.let { return it }
+    private fun publicResolvers(): PublicResolvers? {
+        publicResolvers.get()?.let { return it }
         return try {
-            val cf = SimpleResolver("1.1.1.1").apply { timeout = java.time.Duration.ofMillis(timeoutMillis) }
-            val go = SimpleResolver("8.8.8.8").apply { timeout = java.time.Duration.ofMillis(timeoutMillis) }
-            val built = Resolvers(cf, go)
-            resolvers.compareAndSet(null, built)
-            resolvers.get()
+            val cf = SimpleResolver("1.1.1.1").apply { timeout = Duration.ofMillis(timeoutMillis) }
+            val go = SimpleResolver("8.8.8.8").apply { timeout = Duration.ofMillis(timeoutMillis) }
+            val built = PublicResolvers(cf, go)
+            publicResolvers.compareAndSet(null, built)
+            publicResolvers.get()
         } catch (t: Throwable) {
             // Resolver construction itself failed (rare: bad address literal). Surface as null;
             // the resolve() path will fall back to the system resolver.
@@ -73,13 +96,32 @@ public class AsyncDnsResolver(
     }
 
     /**
+     * Builds a one-shot [SimpleResolver] for the current system DNS server, or null when the
+     * watcher has nothing to offer (no servers configured yet or a transient read failure).
+     *
+     * A fresh resolver per resolve() call keeps the watcher refresh cycle truly observable: a
+     * VPN that just came up and changed the system DNS lands in the very next race instead of
+     * waiting for a long-lived resolver instance to expire.
+     */
+    private fun systemResolverOrNull(): SimpleResolver? {
+        val server = systemDnsWatcher.currentServer() ?: return null
+        return try {
+            SimpleResolver(server).apply { timeout = Duration.ofMillis(timeoutMillis) }
+        } catch (t: Throwable) {
+            log.debug("Failed to construct system DNS resolver for {}: {}", server, t.toString())
+            null
+        }
+    }
+
+    /**
      * Resolves [host] to an [InetAddress] without blocking the caller's coroutine thread.
      *
      * Resolution order:
      *   1. Already an IPv4/IPv6 literal: [InetAddress.getByName] short-circuits, no DNS lookup.
-     *   2. Race 1.1.1.1 / 8.8.8.8 over UDP via dnsjava NIO.
-     *   3. If both upstreams time out or error, fall back to the system resolver on
-     *      [Dispatchers.IO] (so a slow system resolver still does not pin the caller's thread).
+     *   2. Race the OS-configured system DNS (when available) plus 1.1.1.1 plus 8.8.8.8 over UDP
+     *      via dnsjava NIO; whichever returns an A record first wins.
+     *   3. If every racer times out or errors, fall back to the system resolver on
+     *      [Dispatchers.IO] (so a slow getaddrinfo still does not pin the caller's thread).
      *
      * @throws UnknownHostException when no path produced an address.
      */
@@ -87,17 +129,21 @@ public class AsyncDnsResolver(
         // IP literals (a.b.c.d / IPv6) are not DNS names. Short-circuit via the JDK; this only
         // parses the literal, no resolver socket is touched.
         if (looksLikeIpLiteral(host)) {
-            return try {
-                InetAddress.getByName(host)
-            } catch (e: UnknownHostException) {
-                throw e
-            }
+            return InetAddress.getByName(host)
         }
 
-        val rs = resolvers()
-        if (rs != null) {
+        val publics = publicResolvers()
+        val system = systemResolverOrNull()
+        val racers: List<Resolver> = buildList {
+            if (system != null) add(system)
+            if (publics != null) {
+                add(publics.cloudflare)
+                add(publics.google)
+            }
+        }
+        if (racers.isNotEmpty()) {
             val raced = withTimeoutOrNull(timeoutMillis) {
-                raceAsync(host, rs.cloudflare, rs.google)
+                raceAsync(host, racers)
             }
             if (raced != null) return raced
         }
@@ -116,7 +162,7 @@ public class AsyncDnsResolver(
         return fallback ?: throw UnknownHostException(host)
     }
 
-    private suspend fun raceAsync(host: String, a: Resolver, b: Resolver): InetAddress? {
+    private suspend fun raceAsync(host: String, resolvers: List<Resolver>): InetAddress? {
         val name = try {
             Name.fromString(if (host.endsWith('.')) host else "$host.")
         } catch (_: Throwable) {
@@ -124,36 +170,51 @@ public class AsyncDnsResolver(
         }
         val query = Message.newQuery(org.xbill.DNS.Record.newRecord(name, Type.A, org.xbill.DNS.DClass.IN))
 
-        // dnsjava sendAsync returns a CompletionStage<Message>; CompletableFuture.anyOf to race.
-        val fa: CompletableFuture<Message> = a.sendAsync(query).toCompletableFuture()
-        val fb: CompletableFuture<Message> = b.sendAsync(query).toCompletableFuture()
+        // dnsjava sendAsync returns a CompletionStage<Message>; race them with anyOf, then fall
+        // back to the remaining futures if the first to complete failed.
+        val futures: List<CompletableFuture<Message>> =
+            resolvers.map { it.sendAsync(query).toCompletableFuture() }
         try {
+            // anyOf: the first to complete (success OR failure) wins. We accept a successful
+            // result immediately; if the winner failed, walk the remaining futures for a salvage.
             val winner = try {
-                // CompletableFuture.anyOf: first to complete (success OR failure) wins. Prefer a
-                // SUCCESS path; if the winning future failed but the other one succeeded, fall
-                // through to the loser.
-                val any = CompletableFuture.anyOf(fa, fb).await()
+                val any = CompletableFuture.anyOf(*futures.toTypedArray()).await()
                 any as? Message
             } catch (_: Throwable) {
                 null
             }
-
-            val msg = winner ?: try {
-                // If the first-to-complete failed, await the slower one as a salvage path.
-                val slower = if (fa.isDone && fa.isCompletedExceptionally) fb else fa
-                slower.await()
-            } catch (_: Throwable) {
-                return null
-            }
-
+            val msg = winner ?: salvage(futures) ?: return null
             return pickFirstA(msg)
         } finally {
-            // Cancel whichever future did not produce the returned answer so the dnsjava NIO
-            // worker drops its pending UDP query state instead of waiting for the 5s timeout.
-            // mayInterruptIfRunning is moot on CompletableFuture, the boolean is ignored.
-            fa.cancel(false)
-            fb.cancel(false)
+            // Cancel any future that did not produce the returned answer so the dnsjava NIO worker
+            // drops its pending UDP state instead of waiting for its own timeout.
+            futures.forEach { it.cancel(false) }
         }
+    }
+
+    /**
+     * Walks the futures that did NOT win [CompletableFuture.anyOf] and returns the first one
+     * that already completed successfully, awaiting up to the remaining race budget on the rest.
+     *
+     * This salvage path matters when the fastest racer is a misconfigured server that returns
+     * REFUSED or SERVFAIL: it completes first (so wins anyOf) but produced no answer. Without
+     * salvage the slower-but-correct racer's result would be discarded by the outer finally.
+     */
+    private suspend fun salvage(futures: List<CompletableFuture<Message>>): Message? {
+        for (f in futures) {
+            if (f.isDone && !f.isCompletedExceptionally && !f.isCancelled) {
+                return try { f.get() } catch (_: Throwable) { null }
+            }
+        }
+        for (f in futures) {
+            if (f.isDone) continue
+            try {
+                return f.await()
+            } catch (_: Throwable) {
+                // try the next
+            }
+        }
+        return null
     }
 
     private fun pickFirstA(message: Message): InetAddress? {
@@ -181,9 +242,110 @@ public class AsyncDnsResolver(
         /** Default per-attempt resolver timeout. Kept short so dead hosts free the path quickly. */
         public const val DEFAULT_TIMEOUT_MILLIS: Long = 5_000L
 
+        /** Refresh cadence for [SystemDnsWatcher]'s view of the OS-configured DNS servers. */
+        public const val SYSTEM_DNS_REFRESH_INTERVAL_MILLIS: Long = 30_000L
+
         /** Shared instance reused by [SOCKSHandshake]; one resolver per process is enough. */
         @JvmStatic
         public val shared: AsyncDnsResolver = AsyncDnsResolver()
+    }
+}
+
+/**
+ * Background poller that publishes the host's currently-configured DNS server IP so the resolver
+ * race can include it without blocking on the OS resolver itself.
+ *
+ * Why a watcher and not a per-resolve read: dnsjava's [ResolverConfig.refresh] walks the OS
+ * configuration (Windows IPHlpAPI / Linux /etc/resolv.conf) and that walk is comparatively
+ * expensive and not designed to be called per query. A daemon thread polls every
+ * [intervalMillis] and publishes the first usable server into an atomic reference; resolvers
+ * read that reference lock-free.
+ *
+ * Single server is published intentionally: corporate networks routinely list several internal
+ * DNS servers and any one of them will know the corporate names. Picking the first keeps the
+ * race width predictable (one system racer + two public).
+ *
+ * @param intervalMillis poll cadence. Default 30 s strikes a balance between picking up a new
+ *   VPN-pushed DNS quickly and not waking the JVM unnecessarily.
+ * @param read function that returns the current OS DNS server list. Tests override to inject
+ *   a deterministic value; production uses [readSystemDns].
+ */
+public class SystemDnsWatcher(
+    private val intervalMillis: Long = AsyncDnsResolver.SYSTEM_DNS_REFRESH_INTERVAL_MILLIS,
+    private val read: () -> List<InetSocketAddress> = ::readSystemDns,
+) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    private val current: AtomicReference<InetSocketAddress?> = AtomicReference(null)
+
+    @Volatile
+    private var started: Boolean = false
+
+    /**
+     * Returns the most recently observed system DNS server, or null when no usable server has
+     * been read yet. Lock-free: safe to call from any thread on any resolve path.
+     */
+    public fun currentServer(): InetSocketAddress? = current.get()
+
+    /**
+     * Forces an immediate re-read of the OS-configured DNS servers. Used by tests to avoid the
+     * 30 s wait; in production the daemon poller handles refreshes.
+     */
+    public fun refreshNow() {
+        runCatching {
+            val first = read().firstOrNull()
+            current.set(first)
+        }.onFailure { log.debug("SystemDnsWatcher refresh failed: {}", it.toString()) }
+    }
+
+    /**
+     * Starts the background refresh loop. Idempotent: a second call is a no-op so the [shared]
+     * watcher can be started safely from multiple resolver instances.
+     */
+    public fun start() {
+        if (started) return
+        synchronized(this) {
+            if (started) return
+            // Eager first read so the very first resolve() already has a server when one is
+            // configured; the loop then keeps it in sync with VPN-up / network-change events.
+            refreshNow()
+            executor.scheduleWithFixedDelay(
+                { refreshNow() },
+                intervalMillis,
+                intervalMillis,
+                TimeUnit.MILLISECONDS,
+            )
+            started = true
+        }
+    }
+
+    private val executor by lazy {
+        Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "ktor-socks-system-dns-watcher").apply { isDaemon = true }
+        }
+    }
+
+    public companion object {
+        /**
+         * Process-wide singleton used by [AsyncDnsResolver.shared]. Eagerly started here so the
+         * first resolve() already benefits from a populated system DNS without a separate
+         * initialization step at every call site.
+         */
+        @JvmStatic
+        public val shared: SystemDnsWatcher = SystemDnsWatcher().also { it.start() }
+
+        /**
+         * Reads the OS-configured DNS server list via dnsjava's [ResolverConfig]. Cross-platform:
+         * Windows IPHlpAPI (via JNA bundled with dnsjava) and Linux /etc/resolv.conf are both
+         * handled by the same call. Returns an empty list on any failure so the caller can
+         * gracefully fall back to public resolvers.
+         */
+        public fun readSystemDns(): List<InetSocketAddress> = try {
+            ResolverConfig.refresh()
+            ResolverConfig.getCurrentConfig().servers().orEmpty()
+        } catch (_: Throwable) {
+            emptyList()
+        }
     }
 }
 
