@@ -37,8 +37,8 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Three upstream resolvers are queried in parallel and whichever answers first wins:
  * Cloudflare 1.1.1.1, Google 8.8.8.8, and the host's currently-configured system DNS server
- * (read from the OS network stack via dnsjava's [ResolverConfig], refreshed every
- * [SYSTEM_DNS_REFRESH_INTERVAL_MILLIS]). The system entry is what lets split-horizon intranet
+ * (read from the OS network stack via dnsjava's [ResolverConfig], refreshed at the cadence
+ * defined by [SYSTEM_DNS_REFRESH_INTERVAL_MILLIS]). The system entry is what lets split-horizon intranet
  * names (corporate hosts that the public resolvers do not know) succeed without forcing every
  * query through a slow corporate DNS. When the watcher has no system server yet (e.g. fresh
  * process, between refreshes after the OS removed all servers), the race runs with the two
@@ -242,8 +242,13 @@ public class AsyncDnsResolver(
         /** Default per-attempt resolver timeout. Kept short so dead hosts free the path quickly. */
         public const val DEFAULT_TIMEOUT_MILLIS: Long = 5_000L
 
-        /** Refresh cadence for [SystemDnsWatcher]'s view of the OS-configured DNS servers. */
-        public const val SYSTEM_DNS_REFRESH_INTERVAL_MILLIS: Long = 30_000L
+        /**
+         * Refresh cadence for [SystemDnsWatcher]'s view of the OS-configured DNS servers. 90 s
+         * is short enough to pick up a VPN-pushed DNS change within a typical user-perceptible
+         * window yet long enough to keep the per-cycle DEBUG log block (search-paths plus
+         * nameservers, four lines per refresh on Windows) from dominating the production log.
+         */
+        public const val SYSTEM_DNS_REFRESH_INTERVAL_MILLIS: Long = 90_000L
 
         /** Shared instance reused by [SOCKSHandshake]; one resolver per process is enough. */
         @JvmStatic
@@ -265,7 +270,7 @@ public class AsyncDnsResolver(
  * DNS servers and any one of them will know the corporate names. Picking the first keeps the
  * race width predictable (one system racer + two public).
  *
- * @param intervalMillis poll cadence. Default 30 s strikes a balance between picking up a new
+ * @param intervalMillis poll cadence. Default 90 s strikes a balance between picking up a new
  *   VPN-pushed DNS quickly and not waking the JVM unnecessarily.
  * @param read function that returns the current OS DNS server list. Tests override to inject
  *   a deterministic value; production uses [readSystemDns].
@@ -289,7 +294,7 @@ public class SystemDnsWatcher(
 
     /**
      * Forces an immediate re-read of the OS-configured DNS servers. Used by tests to avoid the
-     * 30 s wait; in production the daemon poller handles refreshes.
+     * scheduled poll wait; in production the daemon poller handles refreshes.
      */
     public fun refreshNow() {
         runCatching {
