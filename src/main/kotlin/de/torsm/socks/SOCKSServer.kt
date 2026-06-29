@@ -58,7 +58,7 @@ public open class SOCKSServer(
                     log.debug("SOCKS client connected: {}", clientName)
 
                     launchClientJob(clientSocket).invokeOnCompletion {
-                        log.debug("SOCKS client disconnected: {} (reason: {})", clientName, it?.message ?: "normally")
+                        log.debug("SOCKS client disconnected: {} (reason: {})", clientName, disconnectReason(it))
                     }
                 }
             }
@@ -100,5 +100,21 @@ public open class SOCKSServer(
         tasks.forEach {
             it.invokeOnCompletion { t -> this@cancelOnCompletion.cancel(message, t) }
         }
+    }
+
+    /**
+     * pick the most informative message from a completion throwable.
+     *
+     * inner coroutine machinery often surfaces generic strings like
+     * "StandaloneCoroutine was cancelled" while the real reason sits on `cause`.
+     * prefer the outer message when it carries content, otherwise walk to the
+     * cause; fall back to "normally" when the client just closed cleanly.
+     */
+    private fun disconnectReason(t: Throwable?): String {
+        if (t == null) return "normally"
+        val own = t.message?.takeIf { it.isNotBlank() && !it.startsWith("StandaloneCoroutine") }
+        if (own != null) return own
+        val causeMsg = t.cause?.message?.takeIf { it.isNotBlank() }
+        return causeMsg ?: t.message ?: t::class.java.simpleName
     }
 }
