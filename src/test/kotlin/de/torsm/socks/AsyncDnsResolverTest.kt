@@ -15,9 +15,14 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import org.xbill.DNS.hosts.HostsFileParser
 import java.net.InetSocketAddress
 import java.net.UnknownHostException
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.Executors
+import kotlin.system.measureTimeMillis
 
 /**
  * Coverage for [AsyncDnsResolver].
@@ -67,6 +72,100 @@ internal class AsyncDnsResolverTest {
         val resolver = AsyncDnsResolver(timeoutMillis = 5_000L, systemDnsWatcher = watcher)
         val addr = resolver.resolve("one.one.one.one")
         assertNotNull(addr)
+    }
+
+    @Test
+    fun `hosts file entry wins over DNS race`(@TempDir tempDir: Path) = runBlocking {
+        // Fixture hosts file with a name that DNS could NEVER resolve (.invalid TLD is guaranteed
+        // NXDOMAIN by RFC 6761). If resolve() returns the mapped IP for this name, the hosts
+        // file MUST have short-circuited the DNS race - the race path would have thrown.
+        val hostsFile = tempDir.resolve("hosts")
+        Files.writeString(hostsFile, "10.46.228.190 hr.sberbank.invalid\n")
+        val resolver = AsyncDnsResolver(
+            timeoutMillis = 5_000L,
+            systemDnsWatcher = SystemDnsWatcher(read = { emptyList() }),
+            hostsFile = HostsFileParser(hostsFile),
+        )
+        val addr = resolver.resolve("hr.sberbank.invalid")
+        assertEquals("10.46.228.190", addr.hostAddress)
+    }
+
+    @Test
+    fun `hosts file lookup completes fast enough to prove it beat DNS`(@TempDir tempDir: Path) = runBlocking {
+        // A hosts hit must return in far less than any realistic DNS RTT. 200 ms is a safe upper
+        // bound: a warm dnsjava parser is a memory lookup, DNS to Cloudflare/Google is 20-100 ms
+        // best case. This is not a substitute for the .invalid test above (which proves DNS never
+        // ran); it is defence in depth against a future refactor that queries DNS in parallel.
+        val hostsFile = tempDir.resolve("hosts")
+        Files.writeString(hostsFile, "192.0.2.1 fast.override.test\n")
+        val resolver = AsyncDnsResolver(
+            timeoutMillis = 5_000L,
+            systemDnsWatcher = SystemDnsWatcher(read = { emptyList() }),
+            hostsFile = HostsFileParser(hostsFile),
+        )
+        // Warm the parser so the first-read file I/O does not count.
+        resolver.resolve("fast.override.test")
+        val elapsed = measureTimeMillis {
+            val addr = resolver.resolve("fast.override.test")
+            assertEquals("192.0.2.1", addr.hostAddress)
+        }
+        assertTrue(elapsed < 200L, "hosts hit should be instant, took ${elapsed} ms")
+    }
+
+    @Test
+    fun `hostname not in hosts file falls through to DNS race`(@TempDir tempDir: Path) = runBlocking {
+        // Hosts file exists but does NOT map the queried name. Resolution must proceed to the
+        // DNS race and return a real answer from the public resolvers.
+        val hostsFile = tempDir.resolve("hosts")
+        Files.writeString(hostsFile, "10.0.0.1 something.else.local\n")
+        val resolver = AsyncDnsResolver(
+            timeoutMillis = 5_000L,
+            hostsFile = HostsFileParser(hostsFile),
+        )
+        val addr = resolver.resolve("one.one.one.one")
+        assertNotNull(addr)
+        // one.one.one.one canonically resolves to 1.1.1.1 or 1.0.0.1; either proves the DNS race
+        // ran, not the hosts file (which does not contain this name).
+        assertTrue(
+            addr.hostAddress == "1.1.1.1" || addr.hostAddress == "1.0.0.1",
+            "expected DNS-provided Cloudflare IP, got ${addr.hostAddress}",
+        )
+    }
+
+    @Test
+    fun `hosts lookup exception is swallowed, resolve continues via DNS`(@TempDir tempDir: Path) = runBlocking {
+        // Corrupted hosts file that HostsFileParser accepts at construction (it's a regular file)
+        // but that yields no A record for the queried name. The parse-time internal state of
+        // dnsjava must not leak an exception out of our resolver. If it did, resolve() would
+        // throw instead of returning the DNS answer.
+        val hostsFile = tempDir.resolve("hosts")
+        Files.writeString(
+            hostsFile,
+            "# malformed entries below\nnot-an-address whatever\n1 too-few-tokens-2 3 4\n",
+        )
+        val resolver = AsyncDnsResolver(
+            timeoutMillis = 5_000L,
+            hostsFile = HostsFileParser(hostsFile),
+        )
+        val addr = resolver.resolve("one.one.one.one")
+        assertNotNull(addr, "resolve must survive a malformed hosts file and answer via DNS")
+    }
+
+    @Test
+    fun `default HostsFileParser constructor works on the current platform`() {
+        // Sanity: the default constructor picks the platform-appropriate path (/etc/hosts on
+        // unix, %SystemRoot%\System32\drivers\etc\hosts on windows) without blowing up at
+        // construction time. We do not assert what it resolves; that is environmental. This
+        // guards against a dnsjava upgrade breaking cross-platform behaviour.
+        val parser = HostsFileParser()
+        assertNotNull(parser)
+        // Additionally: the resolver's own default construction path exercises the same
+        // constructor and must not throw either.
+        val resolver = AsyncDnsResolver(
+            timeoutMillis = 2_000L,
+            systemDnsWatcher = SystemDnsWatcher(read = { emptyList() }),
+        )
+        assertNotNull(resolver)
     }
 
     @Test

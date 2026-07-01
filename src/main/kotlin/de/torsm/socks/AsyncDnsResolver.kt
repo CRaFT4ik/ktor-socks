@@ -23,6 +23,7 @@ import org.xbill.DNS.Resolver
 import org.xbill.DNS.ResolverConfig
 import org.xbill.DNS.SimpleResolver
 import org.xbill.DNS.Type
+import org.xbill.DNS.hosts.HostsFileParser
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.UnknownHostException
@@ -35,14 +36,21 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Non-blocking DNS resolver for hostnames received by the SOCKS5 handshake.
  *
- * Three upstream resolvers are queried in parallel and whichever answers first wins:
- * Cloudflare 1.1.1.1, Google 8.8.8.8, and the host's currently-configured system DNS server
- * (read from the OS network stack via dnsjava's [ResolverConfig], refreshed at the cadence
- * defined by [SYSTEM_DNS_REFRESH_INTERVAL_MILLIS]). The system entry is what lets split-horizon intranet
- * names (corporate hosts that the public resolvers do not know) succeed without forcing every
- * query through a slow corporate DNS. When the watcher has no system server yet (e.g. fresh
- * process, between refreshes after the OS removed all servers), the race runs with the two
- * public resolvers only.
+ * Resolution follows POSIX Name Service Switch semantics (`files -> dns`): the OS hosts file
+ * (`/etc/hosts` on unix, `%SystemRoot%\System32\drivers\etc\hosts` on windows) is consulted
+ * first and wins deterministically when the requested host has an entry. Only when the hosts
+ * file has no match does the DNS race run. This matches the behaviour users expect from `curl`
+ * and `getaddrinfo` and lets intranet overrides (e.g. an internal ingress mapped by hand) beat
+ * whatever the raw DNS servers would return.
+ *
+ * When the hosts file has no entry, three upstream resolvers are queried in parallel and
+ * whichever answers first wins: Cloudflare 1.1.1.1, Google 8.8.8.8, and the host's
+ * currently-configured system DNS server (read from the OS network stack via dnsjava's
+ * [ResolverConfig], refreshed at the cadence defined by [SYSTEM_DNS_REFRESH_INTERVAL_MILLIS]).
+ * The system entry lets split-horizon intranet names (corporate hosts the public resolvers do
+ * not know) succeed without forcing every query through a slow corporate DNS. When the watcher
+ * has no system server yet (fresh process, between refreshes after the OS removed all servers),
+ * the race runs with the two public resolvers only.
  *
  * Critically, the system DNS is queried over UDP via dnsjava NIO exactly like the public
  * resolvers; we never call [InetAddress.getByName] just to pick up the OS resolver, since that
@@ -55,7 +63,9 @@ import java.util.concurrent.atomic.AtomicReference
  * getaddrinfo cannot pin the path indefinitely.
  *
  * Threading contract: [resolve] suspends but never blocks the caller's thread on socket I/O.
- * dnsjava's NIO event loop runs on its own daemon threads.
+ * dnsjava's NIO event loop runs on its own daemon threads. Hosts file I/O is wrapped in
+ * [Dispatchers.IO]; dnsjava's [HostsFileParser] caches the parsed file by mtime so only the
+ * first lookup pays the sub-millisecond read cost.
  *
  * On NXDOMAIN every path throws [UnknownHostException]. Other transient failures (timeout,
  * NoRouteToHost) also surface as [UnknownHostException] so the SOCKS5 server returns a sane
@@ -67,10 +77,14 @@ import java.util.concurrent.atomic.AtomicReference
  * @property systemDnsWatcher source of system DNS server addresses; tests inject a fixed or
  *   empty watcher to control the race composition. Defaults to a shared watcher that polls
  *   the OS every [SYSTEM_DNS_REFRESH_INTERVAL_MILLIS].
+ * @property hostsFile parser for the OS hosts file. Defaults to dnsjava's default-constructor
+ *   parser which picks the platform-appropriate path. Tests inject a parser pointed at a
+ *   fixture file to control what wins the pre-race lookup.
  */
 public class AsyncDnsResolver(
     private val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
     private val systemDnsWatcher: SystemDnsWatcher = SystemDnsWatcher.shared,
+    private val hostsFile: HostsFileParser = HostsFileParser(),
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -118,9 +132,12 @@ public class AsyncDnsResolver(
      *
      * Resolution order:
      *   1. Already an IPv4/IPv6 literal: [InetAddress.getByName] short-circuits, no DNS lookup.
-     *   2. Race the OS-configured system DNS (when available) plus 1.1.1.1 plus 8.8.8.8 over UDP
+     *   2. OS hosts file (`/etc/hosts` on unix, windows equivalent): if the name has an entry
+     *      it wins immediately and no DNS traffic is generated. Matches POSIX nsswitch
+     *      `files -> dns` order.
+     *   3. Race the OS-configured system DNS (when available) plus 1.1.1.1 plus 8.8.8.8 over UDP
      *      via dnsjava NIO; whichever returns an A record first wins.
-     *   3. If every racer times out or errors, fall back to the system resolver on
+     *   4. If every racer times out or errors, fall back to the system resolver on
      *      [Dispatchers.IO] (so a slow getaddrinfo still does not pin the caller's thread).
      *
      * @throws UnknownHostException when no path produced an address.
@@ -131,6 +148,11 @@ public class AsyncDnsResolver(
         if (looksLikeIpLiteral(host)) {
             return InetAddress.getByName(host)
         }
+
+        // Hosts file wins over DNS when an entry is present. dnsjava caches the parsed file by
+        // mtime, so this is a memory lookup after the first call and picks up edits when the
+        // user re-saves the file.
+        hostsFileLookup(host)?.let { return it }
 
         val publics = publicResolvers()
         val system = systemResolverOrNull()
@@ -160,6 +182,27 @@ public class AsyncDnsResolver(
             }
         }
         return fallback ?: throw UnknownHostException(host)
+    }
+
+    /**
+     * Looks up [host] in the OS hosts file via dnsjava's [HostsFileParser].
+     *
+     * Returns the mapped address when the file has a matching A record, null when the file has
+     * no entry for [host] or any read/parse error occurs. Errors are swallowed intentionally so
+     * a corrupt or unreadable hosts file cannot break normal DNS resolution; the caller falls
+     * through to the DNS race in that case.
+     *
+     * File I/O is wrapped in [Dispatchers.IO] to keep the caller thread free. dnsjava caches
+     * the parsed file by mtime, so only the first call in each edit cycle pays the actual read
+     * cost (sub-millisecond for a typical hosts file).
+     */
+    private suspend fun hostsFileLookup(host: String): InetAddress? = withContext(Dispatchers.IO) {
+        try {
+            val name = Name.fromString(if (host.endsWith('.')) host else "$host.")
+            hostsFile.getAddressForHost(name, Type.A).orElse(null)
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private suspend fun raceAsync(host: String, resolvers: List<Resolver>): InetAddress? {
