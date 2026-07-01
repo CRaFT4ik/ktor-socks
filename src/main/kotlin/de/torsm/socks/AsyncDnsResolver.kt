@@ -89,6 +89,26 @@ public class AsyncDnsResolver(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
+    init {
+        // Announce hosts-file registration at INFO, symmetric to dnsjava's own
+        // "Added /1.1.1.1:53 to nameservers" line for the DNS resolvers. Without this, operators
+        // reading startup logs cannot tell that hosts entries are being consulted before the DNS
+        // race. Path is read via reflection because HostsFileParser exposes no getter; on failure
+        // we log a generic message so a dnsjava field rename cannot break startup.
+        val path = try {
+            val field = HostsFileParser::class.java.getDeclaredField("path")
+            field.isAccessible = true
+            field.get(hostsFile)?.toString()
+        } catch (_: Throwable) {
+            null
+        }
+        if (path != null) {
+            log.info("Hosts file registered as first-priority resolver: {}", path)
+        } else {
+            log.info("Hosts file registered as first-priority resolver (default OS hosts file)")
+        }
+    }
+
     private data class PublicResolvers(val cloudflare: SimpleResolver, val google: SimpleResolver)
 
     private val publicResolvers: AtomicReference<PublicResolvers?> = AtomicReference(null)
@@ -199,7 +219,14 @@ public class AsyncDnsResolver(
     private suspend fun hostsFileLookup(host: String): InetAddress? = withContext(Dispatchers.IO) {
         try {
             val name = Name.fromString(if (host.endsWith('.')) host else "$host.")
-            hostsFile.getAddressForHost(name, Type.A).orElse(null)
+            val addr = hostsFile.getAddressForHost(name, Type.A).orElse(null)
+            if (addr != null) {
+                // DEBUG per hit so operators can attribute a resolution to /etc/hosts vs DNS. Kept
+                // at DEBUG because a busy proxy could otherwise flood the log; the INFO init line
+                // already proves the resolver is live.
+                log.debug("Resolved {} via hosts file: {}", host, addr.hostAddress)
+            }
+            addr
         } catch (_: Throwable) {
             null
         }

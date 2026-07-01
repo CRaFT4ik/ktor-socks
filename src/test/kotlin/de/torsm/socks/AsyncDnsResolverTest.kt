@@ -6,6 +6,10 @@
 
 package de.torsm.socks
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
@@ -16,6 +20,7 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.slf4j.LoggerFactory
 import org.xbill.DNS.hosts.HostsFileParser
 import java.net.InetSocketAddress
 import java.net.UnknownHostException
@@ -166,6 +171,83 @@ internal class AsyncDnsResolverTest {
             systemDnsWatcher = SystemDnsWatcher(read = { emptyList() }),
         )
         assertNotNull(resolver)
+    }
+
+    @Test
+    fun `construction emits INFO log announcing hosts file resolver`(@TempDir tempDir: Path) {
+        // Symmetric to dnsjava's "Added /1.1.1.1:53 to nameservers" line: hosts-file registration
+        // must be visible in startup logs so operators can tell the resolver is live and see the
+        // path it's reading from.
+        val hostsFile = tempDir.resolve("hosts")
+        Files.writeString(hostsFile, "10.0.0.1 log-init-test.local\n")
+        val (appender, cleanup) = attachAppender(AsyncDnsResolver::class.java)
+        try {
+            AsyncDnsResolver(
+                timeoutMillis = 2_000L,
+                systemDnsWatcher = SystemDnsWatcher(read = { emptyList() }),
+                hostsFile = HostsFileParser(hostsFile),
+            )
+            val infoLines = appender.list.filter { it.level == Level.INFO }
+            assertTrue(
+                infoLines.any { it.formattedMessage.contains("Hosts file registered as first-priority resolver") },
+                "expected INFO announcement on construction, got: ${appender.list.map { it.formattedMessage }}",
+            )
+            // Path was accessible via reflection; the announcement must include it.
+            assertTrue(
+                infoLines.any { it.formattedMessage.contains(hostsFile.toString()) },
+                "expected hosts file path in the INFO line, got: ${infoLines.map { it.formattedMessage }}",
+            )
+        } finally {
+            cleanup()
+        }
+    }
+
+    @Test
+    fun `hosts file hit is logged at DEBUG with host and address`(@TempDir tempDir: Path) = runBlocking {
+        // Operators must be able to attribute a resolution to /etc/hosts vs DNS by reading logs.
+        // DEBUG (not INFO) so a busy proxy doesn't flood the log; the init INFO already proves the
+        // resolver is live.
+        val hostsFile = tempDir.resolve("hosts")
+        Files.writeString(hostsFile, "10.9.8.7 debug-hit-test.local\n")
+        val resolver = AsyncDnsResolver(
+            timeoutMillis = 2_000L,
+            systemDnsWatcher = SystemDnsWatcher(read = { emptyList() }),
+            hostsFile = HostsFileParser(hostsFile),
+        )
+        val (appender, cleanup) = attachAppender(AsyncDnsResolver::class.java)
+        try {
+            val addr = resolver.resolve("debug-hit-test.local")
+            assertEquals("10.9.8.7", addr.hostAddress)
+            val debugLines = appender.list.filter { it.level == Level.DEBUG }
+            assertTrue(
+                debugLines.any {
+                    val m = it.formattedMessage
+                    m.contains("debug-hit-test.local") && m.contains("10.9.8.7") && m.contains("hosts file")
+                },
+                "expected DEBUG line naming host and address, got: ${debugLines.map { it.formattedMessage }}",
+            )
+        } finally {
+            cleanup()
+        }
+    }
+
+    /**
+     * Attaches a logback [ListAppender] to the given class's logger so tests can assert on emitted
+     * lines. Returns the appender plus a cleanup lambda that detaches it and restores the previous
+     * log level; call the lambda in a finally block so a failed assertion never leaks state into
+     * the next test.
+     */
+    private fun attachAppender(clazz: Class<*>): Pair<ListAppender<ILoggingEvent>, () -> Unit> {
+        val logger = LoggerFactory.getLogger(clazz) as Logger
+        val previousLevel = logger.level
+        logger.level = Level.DEBUG
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        return appender to {
+            logger.detachAppender(appender)
+            logger.level = previousLevel
+            appender.stop()
+        }
     }
 
     @Test
