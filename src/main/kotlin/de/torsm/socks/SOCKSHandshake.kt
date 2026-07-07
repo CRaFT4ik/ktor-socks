@@ -1,9 +1,13 @@
 package de.torsm.socks
 
-import de.torsm.socks.SOCKSAddressType.*
-import de.torsm.socks.SOCKSCommand.*
-import de.torsm.socks.SOCKSVersion.SOCKS4
-import de.torsm.socks.SOCKSVersion.SOCKS5
+import de.torsm.socks.protocol.SOCKSAddressType
+import de.torsm.socks.protocol.SOCKSAddressType.*
+import de.torsm.socks.protocol.SOCKSCommand
+import de.torsm.socks.protocol.SOCKSCommand.*
+import de.torsm.socks.protocol.SOCKSVersion
+import de.torsm.socks.protocol.SOCKSVersion.SOCKS4
+import de.torsm.socks.protocol.SOCKSVersion.SOCKS5
+import de.torsm.socks.protocol.SocksProtocolException
 import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
 import io.ktor.utils.io.*
@@ -210,7 +214,7 @@ public open class SOCKSHandshake(
         val code = readByte()
         return try {
             SOCKSCommand.byCode(code)
-        } catch (e: SOCKSException) {
+        } catch (e: SocksProtocolException.MalformedHeader) {
             // RFC 1928 section 6: X'07' = Command not supported (SOCKS5 only)
             if (selectedVersion == SOCKS5) sendFullReply(SOCKS5_COMMAND_NOT_SUPPORTED)
             throw e
@@ -224,7 +228,7 @@ public open class SOCKSHandshake(
                 val code = readByte()
                 try {
                     SOCKSAddressType.byCode(code)
-                } catch (e: SOCKSException) {
+                } catch (e: SocksProtocolException.UnsupportedAtype) {
                     // RFC 1928 section 6: X'08' = Address type not supported
                     sendFullReply(SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED)
                     throw e
