@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -13,6 +14,7 @@ import java.net.SocketTimeoutException
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -195,6 +197,51 @@ class Socks5UdpAssociateSocketTest {
     // Test 6: receive throws SocketException when buffer too small (D-S4)
     // Uses offset so available space = data.size - offset < payload.size
     // -------------------------------------------------------------------------
+
+    // -------------------------------------------------------------------------
+    // Tests 7-9: IPv4-mapped-IPv6 normalization (FIX-4)
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `IPv4-mapped-IPv6 normalizes to Inet4Address`() {
+        val mapped = InetAddress.getByAddress(
+            byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF.toByte(), 0xFF.toByte(),
+                192.toByte(), 168.toByte(), 1, 1)
+        )
+        val relay = allocRelay()
+        val delegate = DatagramSocket(0, loopback)
+        val sock = buildSock(delegate, relay, destination = mapped)
+
+        assertFalse(sock.destinationForTest is Inet6Address, "should not remain Inet6Address after normalization")
+        assertContentEquals(byteArrayOf(192.toByte(), 168.toByte(), 1, 1), sock.destinationForTest.address)
+
+        sock.close(); relay.close()
+    }
+
+    @Test
+    fun `plain IPv4 stays IPv4`() {
+        val v4 = InetAddress.getByName("192.168.1.1")
+        val relay = allocRelay()
+        val delegate = DatagramSocket(0, loopback)
+        val sock = buildSock(delegate, relay, destination = v4)
+
+        assertTrue(sock.destinationForTest is Inet4Address, "plain IPv4 must remain Inet4Address")
+        assertContentEquals(byteArrayOf(192.toByte(), 168.toByte(), 1, 1), sock.destinationForTest.address)
+
+        sock.close(); relay.close()
+    }
+
+    @Test
+    fun `plain IPv6 stays IPv6`() {
+        val v6 = InetAddress.getByName("2001:db8::1")
+        val relay = allocRelay()
+        val delegate = DatagramSocket(0, loopback)
+        val sock = buildSock(delegate, relay, destination = v6)
+
+        assertTrue(sock.destinationForTest is Inet6Address, "plain IPv6 must remain Inet6Address")
+
+        sock.close(); relay.close()
+    }
 
     @Test
     fun `receive throws SocketException when receive buffer too small for payload D-S4`() {

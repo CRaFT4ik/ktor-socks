@@ -37,14 +37,17 @@ public class Socks5UdpAssociateSocket internal constructor(
     destination: InetAddress,
 ) : DatagramSocket(null as SocketAddress?) {
 
-    // NF-7: strip IPv4-mapped-IPv6 (::ffff:a.b.c.d -> Inet4Address) via raw address bytes.
-    private val destination: InetAddress = InetAddress.getByAddress(destination.address)
+    // NF-7: strip IPv4-mapped-IPv6 (::ffff:a.b.c.d -> Inet4Address) by inspecting raw bytes.
+    private val destination: InetAddress = normalizeIpv4Mapped(destination)
 
     /** Exposed for tests only - not part of public API. */
     internal val relayEndpointForTest: InetSocketAddress get() = relayEndpoint
 
     /** Exposed for tests only - not part of public API. */
     internal val tcpControlForTest: Socket get() = tcpControl
+
+    /** Exposed for tests only - not part of public API. */
+    internal val destinationForTest: InetAddress get() = destination
 
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -54,6 +57,7 @@ public class Socks5UdpAssociateSocket internal constructor(
     // Scratch buffer for the raw OS receive. Using a dedicated buffer prevents the OS from
     // truncating the incoming datagram to the caller's (possibly offset-constrained) buffer size,
     // which is required for the D-S4 bounds check to work correctly.
+    // Single-threaded per JDK DatagramSocket contract; kwik Receiver ensures single-thread access.
     private val scratchBuf: ByteArray = ByteArray(65_507)
 
     // --- DatagramSocket delegation ---
@@ -105,18 +109,18 @@ public class Socks5UdpAssociateSocket internal constructor(
         val deadlineNs = if (budgetMs == 0L) Long.MAX_VALUE else System.nanoTime() + budgetMs * 1_000_000L
         var discards = 0
         while (true) {
-            if (discards >= 16) {
-                throw SocketTimeoutException("SOCKS5 receive: 16 discards, likely FRAG flood or spoof")
-            }
-
-            // NF-6: check deadline BEFORE calling setSoTimeout so a zero-budget path
-            // never blocks even for 1 ms.
+            // NF-6: check deadline FIRST, before the discard cap, so an expired budget is
+            // reported as a timeout (not a spoof flood) when both conditions are true simultaneously.
             if (deadlineNs != Long.MAX_VALUE) {
                 val remainingMs = (deadlineNs - System.nanoTime()) / 1_000_000L
                 if (remainingMs <= 0L) {
                     throw SocketTimeoutException("SOCKS5 receive: budget exhausted")
                 }
                 delegate.soTimeout = remainingMs.toInt().coerceAtLeast(1)
+            }
+
+            if (discards >= 16) {
+                throw SocketTimeoutException("SOCKS5 receive: 16 discards, likely FRAG flood or spoof")
             }
 
             // Use scratchBuf so the OS delivers the full datagram regardless of caller's offset.
@@ -175,5 +179,31 @@ public class Socks5UdpAssociateSocket internal constructor(
         runCatching { tcpControl.close() }
         runCatching { delegate.close() }
         super.close()
+    }
+
+    private companion object {
+        /**
+         * Converts an IPv4-mapped IPv6 address (::ffff:a.b.c.d) to a plain [java.net.Inet4Address].
+         * All other addresses are returned unchanged.
+         *
+         * [InetAddress.getByAddress] with a 16-byte array always produces [java.net.Inet6Address],
+         * so the naive `InetAddress.getByAddress(a.address)` is inert for mapped addresses.
+         * This function detects the ::ffff:0:0/96 prefix explicitly and re-creates the address
+         * from the trailing four bytes.
+         */
+        fun normalizeIpv4Mapped(a: InetAddress): InetAddress {
+            val bytes = a.address
+            if (bytes.size == 16 &&
+                bytes[0] == 0.toByte() && bytes[1] == 0.toByte() &&
+                bytes[2] == 0.toByte() && bytes[3] == 0.toByte() &&
+                bytes[4] == 0.toByte() && bytes[5] == 0.toByte() &&
+                bytes[6] == 0.toByte() && bytes[7] == 0.toByte() &&
+                bytes[8] == 0.toByte() && bytes[9] == 0.toByte() &&
+                bytes[10] == 0xFF.toByte() && bytes[11] == 0xFF.toByte()
+            ) {
+                return InetAddress.getByAddress(byteArrayOf(bytes[12], bytes[13], bytes[14], bytes[15]))
+            }
+            return a
+        }
     }
 }
