@@ -1,4 +1,4 @@
-package de.torsm.socks
+package de.torsm.socks.server
 
 import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*

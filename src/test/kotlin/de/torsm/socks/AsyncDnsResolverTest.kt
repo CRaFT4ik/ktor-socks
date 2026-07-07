@@ -6,6 +6,8 @@
 
 package de.torsm.socks
 
+import de.torsm.socks.server.AsyncDnsResolver
+import de.torsm.socks.server.SystemDnsWatcher
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent

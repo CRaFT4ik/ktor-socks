@@ -1,4 +1,4 @@
-package de.torsm.socks
+package de.torsm.socks.server
 
 import io.ktor.network.selector.*
 import io.ktor.network.sockets.*

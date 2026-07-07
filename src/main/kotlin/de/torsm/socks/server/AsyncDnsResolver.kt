@@ -8,7 +8,7 @@
  * besides the call site). LGPL fork: license headers in the upstream files remain intact.
  */
 
-package de.torsm.socks
+package de.torsm.socks.server
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.future.await

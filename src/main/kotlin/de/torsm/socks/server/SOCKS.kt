@@ -1,4 +1,4 @@
-package de.torsm.socks
+package de.torsm.socks.server
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

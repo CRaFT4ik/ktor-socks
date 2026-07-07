@@ -1,5 +1,9 @@
 package de.torsm.socks
 
+import de.torsm.socks.server.UsernamePasswordAuthentication
+import de.torsm.socks.server.addAuthenticationMethod
+import de.torsm.socks.server.socksServer
+import de.torsm.socks.server.useWithChannels
 import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
 import io.ktor.utils.io.*
