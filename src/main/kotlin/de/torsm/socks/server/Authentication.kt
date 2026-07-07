@@ -62,8 +62,16 @@ public abstract class UsernamePasswordAuthentication : SOCKSAuthenticationMethod
         }
 
         val usernameSize = toUnsignedInt(reader.readByte())
+        if (usernameSize == 0) {
+            writer.writeResponse(FAILURE)
+            throw SOCKSException("RFC 1929: ULEN=0 not permitted")
+        }
         val username = reader.readPacket(usernameSize).readBytes().decodeToString()
         val passwordSize = toUnsignedInt(reader.readByte())
+        if (passwordSize == 0) {
+            writer.writeResponse(FAILURE)
+            throw SOCKSException("RFC 1929: PLEN=0 not permitted")
+        }
         val password = reader.readPacket(passwordSize).readBytes().decodeToString()
 
         if (verify(username, password)) {
