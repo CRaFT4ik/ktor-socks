@@ -35,8 +35,16 @@ public open class SOCKSServer(
      * The address this server is actually bound to after [start] has been called.
      * Useful when the server was configured with port 0 (ephemeral port assignment).
      */
+    @Volatile
     public var boundAddress: InetSocketAddress = config.networkAddress
         private set
+
+    /**
+     * Returns the port this server is bound to, or null when not yet bound or when the port is 0
+     * (which signals "not bound" before [start] assigns an ephemeral port).
+     * Used by tests to poll for readiness instead of racing on [boundAddress].
+     */
+    internal fun boundPortOrNull(): Int? = boundAddress.port.takeIf { it != 0 }
 
     /**
      * Launches a coroutine that listens on the network address defined in [config] to accept clients, initiate

@@ -10,11 +10,11 @@ import kotlin.test.assertEquals
 
 /** Actual proxy server address, assigned by [MockServers] after binding on an ephemeral port. */
 val proxyServer: InetSocketAddress get() = MockServers.proxyAddress
-val proxyServerJava: java.net.InetSocketAddress get() = proxyServer.toJavaInetAddress()
+val proxyServerJava: java.net.InetSocketAddress get() = proxyServer.toJavaAddress() as java.net.InetSocketAddress
 
 /** Actual echo/ping-pong server address, assigned by [MockServers] after binding. */
 val mockServer: InetSocketAddress get() = MockServers.mockAddress
-val mockServerJava: java.net.InetSocketAddress get() = mockServer.toJavaInetAddress()
+val mockServerJava: java.net.InetSocketAddress get() = mockServer.toJavaAddress() as java.net.InetSocketAddress
 
 fun createClientSocket(socksVersion: Int): Socket {
     System.setProperty("socksProxyVersion", socksVersion.toString())
