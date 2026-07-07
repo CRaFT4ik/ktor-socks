@@ -17,8 +17,10 @@ import io.ktor.util.network.*
  * @property commands Set of SOCKS commands the server accepts. Defaults to [SOCKSCommand.CONNECT]
  *   only. Add [SOCKSCommand.UDP_ASSOCIATE] to enable UDP relay. Must not be empty.
  * @property udpIdleAssociationTimeoutSeconds Seconds of UDP inactivity before the relay tears
- *   down. Zero disables the watchdog. Only relevant when [SOCKSCommand.UDP_ASSOCIATE] is in
- *   [commands].
+ *   down. Valid range is 1..86400 when [SOCKSCommand.UDP_ASSOCIATE] is in [commands] (validated
+ *   at [SOCKSConfigBuilder.build] time). Values outside that range risk an infinite loop (zero)
+ *   or Long overflow in nanosecond arithmetic (> 86400). Only relevant when
+ *   [SOCKSCommand.UDP_ASSOCIATE] is in [commands].
  */
 public class SOCKSConfig(
     public val allowSOCKS4: Boolean,
@@ -72,10 +74,19 @@ public class SOCKSConfigBuilder {
             field = value
         }
 
-    /** See [SOCKSConfig.udpIdleAssociationTimeoutSeconds]. */
+    /**
+     * See [SOCKSConfig.udpIdleAssociationTimeoutSeconds].
+     * Must be in 1..86400 when [SOCKSCommand.UDP_ASSOCIATE] is in [commands].
+     */
     public var udpIdleAssociationTimeoutSeconds: Long = 300L
 
     public fun build(): SOCKSConfig {
+        if (SOCKSCommand.UDP_ASSOCIATE in commands) {
+            require(udpIdleAssociationTimeoutSeconds in 1L..86400L) {
+                "udpIdleAssociationTimeoutSeconds must be in 1..86400 when UDP_ASSOCIATE is enabled, " +
+                    "got $udpIdleAssociationTimeoutSeconds"
+            }
+        }
         val cfg = SOCKSConfig(
             allowSOCKS4,
             authenticationMethods.ifEmpty { mutableListOf(NoAuthentication) },

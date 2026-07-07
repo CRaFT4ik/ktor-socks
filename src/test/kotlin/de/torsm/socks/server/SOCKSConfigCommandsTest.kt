@@ -32,4 +32,52 @@ class SOCKSConfigCommandsTest {
         val cfg = SOCKSConfigBuilder().build()
         assertEquals(300L, cfg.udpIdleAssociationTimeoutSeconds)
     }
+
+    @Test
+    fun `udpIdleAssociationTimeoutSeconds=0 with UDP_ASSOCIATE rejected at build`() {
+        assertFailsWith<IllegalArgumentException> {
+            SOCKSConfigBuilder().apply {
+                commands = setOf(SOCKSCommand.UDP_ASSOCIATE)
+                udpIdleAssociationTimeoutSeconds = 0
+            }.build()
+        }
+    }
+
+    @Test
+    fun `udpIdleAssociationTimeoutSeconds=86401 with UDP_ASSOCIATE rejected at build`() {
+        assertFailsWith<IllegalArgumentException> {
+            SOCKSConfigBuilder().apply {
+                commands = setOf(SOCKSCommand.UDP_ASSOCIATE)
+                udpIdleAssociationTimeoutSeconds = 86401
+            }.build()
+        }
+    }
+
+    @Test
+    fun `udpIdleAssociationTimeoutSeconds=1 with UDP_ASSOCIATE accepted at build`() {
+        val cfg = SOCKSConfigBuilder().apply {
+            commands = setOf(SOCKSCommand.UDP_ASSOCIATE)
+            udpIdleAssociationTimeoutSeconds = 1
+        }.build()
+        assertEquals(1L, cfg.udpIdleAssociationTimeoutSeconds)
+    }
+
+    @Test
+    fun `udpIdleAssociationTimeoutSeconds=86400 with UDP_ASSOCIATE accepted at build`() {
+        val cfg = SOCKSConfigBuilder().apply {
+            commands = setOf(SOCKSCommand.UDP_ASSOCIATE)
+            udpIdleAssociationTimeoutSeconds = 86400
+        }.build()
+        assertEquals(86400L, cfg.udpIdleAssociationTimeoutSeconds)
+    }
+
+    @Test
+    fun `udpIdleAssociationTimeoutSeconds=0 without UDP_ASSOCIATE accepted at build`() {
+        // Without UDP_ASSOCIATE the timeout field is irrelevant; no validation is applied.
+        val cfg = SOCKSConfigBuilder().apply {
+            commands = setOf(SOCKSCommand.CONNECT)
+            udpIdleAssociationTimeoutSeconds = 0
+        }.build()
+        assertEquals(0L, cfg.udpIdleAssociationTimeoutSeconds)
+    }
 }
