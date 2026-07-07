@@ -55,7 +55,13 @@ internal class SocksUdpRelay(
     )
 
     // Outbound socket: raw datagrams go to the actual target, replies come back here.
-    private val outboundSocket: DatagramSocket = DatagramSocket()
+    // Guard: if DatagramSocket() throws, close relaySocket so it is not leaked.
+    private val outboundSocket: DatagramSocket = try {
+        DatagramSocket()
+    } catch (t: Throwable) {
+        runCatching { relaySocket.close() }
+        throw t
+    }
 
     // Pinned source address of the SOCKS client. Null until the first valid datagram arrives
     // (first-learn mode when the client sent 0.0.0.0 in the UDP ASSOCIATE request).
@@ -103,7 +109,8 @@ internal class SocksUdpRelay(
                 }
             }
         } finally {
-            // Double-close guard: coroutineScope cancel path may not have hit the inner finally.
+            // Safety net: closes sockets a second time (idempotent) for the coroutineScope
+            // cancellation path where the inner finally may not have run.
             runCatching { relaySocket.close() }
             runCatching { outboundSocket.close() }
         }
