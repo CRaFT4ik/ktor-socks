@@ -8,6 +8,7 @@ import de.torsm.socks.protocol.SOCKSVersion
 import de.torsm.socks.protocol.SOCKSVersion.SOCKS4
 import de.torsm.socks.protocol.SOCKSVersion.SOCKS5
 import de.torsm.socks.protocol.SocksProtocolException
+import de.torsm.socks.protocol.SocksReplyCode
 import io.ktor.network.selector.*
 import io.ktor.network.sockets.*
 import io.ktor.utils.io.*
@@ -67,8 +68,12 @@ public open class SOCKSHandshake(
             BIND -> bind(request)
             UDP_ASSOCIATE -> {
                 check(selectedVersion == SOCKS5) { "SOCKS4 does not support $UDP_ASSOCIATE" }
-                sendFullReply(SOCKS5_COMMAND_NOT_SUPPORTED)
-                throw SOCKSException("Unsupported command: $UDP_ASSOCIATE")
+                if (SOCKSCommand.UDP_ASSOCIATE !in config.commands) {
+                    sendFullReply(SOCKS5_COMMAND_NOT_SUPPORTED)
+                    throw SOCKSException("Unsupported command: $UDP_ASSOCIATE")
+                }
+                val relayReq = buildRelayRequestFrom(request)
+                SocksUdpRelay(this, relayReq, config, selector).run()
             }
         }
     }
@@ -297,19 +302,77 @@ public open class SOCKSHandshake(
         }
     }
 
-    private data class SOCKSRequest(
+    internal data class SOCKSRequest(
         val command: SOCKSCommand,
         val destinationAddress: InetAddress,
         val port: Int
     )
+
+    /**
+     * Hints provided by the client in the UDP ASSOCIATE request.
+     * [expectedClientAddr] is null when the client sent 0.0.0.0 (first-learn mode).
+     * [expectedClientPort] is the UDP port the client will send datagrams from (0 = any).
+     */
+    public data class RelayRequest(
+        val expectedClientAddr: java.net.InetAddress?,
+        val expectedClientPort: Int,
+    )
+
+    /** Builds a [RelayRequest] from the parsed SOCKS request for UDP ASSOCIATE. */
+    internal fun buildRelayRequestFrom(request: SOCKSRequest): RelayRequest {
+        val addr = if (request.destinationAddress.isAnyLocalAddress) null else request.destinationAddress
+        return RelayRequest(addr, request.port)
+    }
+
+    /**
+     * Sends a UDP ASSOCIATE reply using a [SocksReplyCode] and Java [bnd] socket address.
+     * Bridges between the Java type carried by [SocksUdpRelay] and ktor's write path.
+     */
+    internal suspend fun sendUdpAssociateReply(code: SocksReplyCode, bnd: java.net.InetSocketAddress) {
+        val ktorBnd = io.ktor.network.sockets.InetSocketAddress(bnd.address.hostAddress, bnd.port)
+        sendFullReply(code.code, ktorBnd)
+    }
+
+    /**
+     * Reads from the TCP control channel until EOF, error, or [idleTimeoutMs] elapses without a
+     * byte arriving. A positive [idleTimeoutMs] causes the method to return when no byte arrives
+     * within the window; zero means "wait forever for EOF or error".
+     *
+     * Per RFC 1928 section 6 the client MUST NOT send any data on the TCP control connection
+     * after UDP ASSOCIATE succeeds, so any read will only ever see EOF or a broken-pipe error.
+     * We still drain rather than just wait on EOF so that garbage bytes do not stall the teardown.
+     */
+    internal suspend fun awaitControlChannelClose(idleTimeoutMs: Long = 0L) {
+        if (idleTimeoutMs > 0L) {
+            while (true) {
+                val b = try {
+                    kotlinx.coroutines.withTimeoutOrNull(idleTimeoutMs) { reader.readByte() }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                  catch (_: Throwable) { return }
+                if (b == null) return
+            }
+        } else {
+            try {
+                while (true) { reader.readByte() }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+              catch (_: Throwable) { }
+        }
+    }
+
+    /** Cancels the TCP control channel read side, triggering teardown of [awaitControlChannelClose]. */
+    internal fun closeTcpControl() {
+        runCatching {
+            reader.cancel(kotlinx.coroutines.CancellationException("idleWatchdog tearing down TCP control"))
+        }
+    }
 }
 
 private const val SOCKS4_REJECTED = 91.toByte()
 private const val SOCKS5_RESERVED = 0.toByte()
 
 // RFC 1928 section 6 reply codes (SOCKS5)
-private const val SOCKS5_COMMAND_NOT_SUPPORTED = 7.toByte()
-private const val SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED = 8.toByte()
+internal const val SOCKS5_COMMAND_NOT_SUPPORTED = 7.toByte()
+internal const val SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED = 8.toByte()
 
 // RFC 1928 section 3, method negotiation
 private const val SOCKS5_NO_ACCEPTABLE_METHODS = 0xFF.toByte()
